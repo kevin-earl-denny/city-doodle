@@ -4,18 +4,19 @@ import os
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
-# Import all models so they are registered with Base.metadata
-# This ensures tables are created during test setup
-import city_api.models  # noqa: F401
 import pytest
 import pytest_asyncio
-from city_api.database import Base, get_db
-from city_api.main import app
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool, StaticPool
+
+# Import all models so they are registered with Base.metadata
+# This ensures tables are created during test setup
+import city_api.models  # noqa: F401
+from city_api.database import Base, get_db
+from city_api.main import app
 
 # Test user IDs (must match the ones used in test files)
 TEST_USER_ID = UUID("00000000-0000-0000-0000-000000000001")

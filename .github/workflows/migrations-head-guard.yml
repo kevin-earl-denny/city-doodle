@@ -17,6 +17,9 @@ name: Migrations Head Guard
 on:
   pull_request:
     branches: [main]
+    # The defaults plus `edited`: retargeting a PR's base to main fires only
+    # `edited`, and the required check must report for that PR too.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -50,7 +53,9 @@ jobs:
       - name: Install Alembic deps
         # Revision files import alembic, sqlalchemy and city_api.database (which
         # imports sqlalchemy.ext.asyncio, hence the asyncio extra for greenlet).
-        run: pip install alembic "sqlalchemy[asyncio]" python-dotenv
+        # Majors pinned: an unpinned upgrade would turn this required check red on
+        # every PR at once (SQLAlchemy 2.1 already stopped pulling in greenlet).
+        run: pip install "alembic>=1.13,<2" "sqlalchemy[asyncio]>=2.0,<2.2" "python-dotenv>=1,<2"
 
       - name: Check Alembic chain
         env:
@@ -61,7 +66,7 @@ jobs:
           status=0
           ./bin/migrations check || status=$?
           if [[ "$status" -eq 1 ]]; then
-            echo "::error::Alembic chain has multiple heads or a duplicate revision ID. For multiple heads: update this branch onto the latest main, run 'bin/migrations fix-heads', commit the merge migration, and push."
+            echo "::error::Alembic chain has multiple heads, a duplicate revision ID, or a dangling down_revision (see log above). For multiple heads: update this branch onto the latest main, run 'bin/migrations fix-heads', commit the merge migration, and push."
             exit 1
           elif [[ "$status" -ne 0 ]]; then
             echo "::error::bin/migrations check failed (exit $status); could not verify the Alembic chain (see log above)."

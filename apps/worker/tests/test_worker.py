@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+
 from city_worker.config import Settings
 from city_worker.models import JobStatus, JobType
 from city_worker.runner import JobRunner, _make_asyncpg_dsn

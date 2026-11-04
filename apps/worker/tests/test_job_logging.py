@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+
 from city_worker import observability
 from city_worker.models import JobType
 from city_worker.runner import JobRunner

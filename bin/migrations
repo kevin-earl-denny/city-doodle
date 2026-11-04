@@ -5,12 +5,13 @@
 # Catches the chain problems parallel PRs keep introducing (#376 "duplicate
 # revision 021"): multiple heads and duplicate revision IDs.
 #
-#   bin/migrations check                 exit 0 ok / 1 multiple heads or duplicate revision / 2 env broken
+#   bin/migrations check                 exit 0 ok / 1 chain bug (multiple heads, duplicate
+#                                        revision, dangling down_revision) / 2 env broken
 #   bin/migrations heads                 list current heads
 #   bin/migrations fix-heads [--dry-run] [-m MSG]   generate an empty merge migration
 #
 # Alembic resolution (first match wins):
-#   1. $ALEMBIC_CMD                      (CI sets this to a pip-installed alembic)
+#   1. $ALEMBIC_CMD                      (one executable path; CI sets it to `alembic`)
 #   2. .venv/bin/alembic                 (the README's dev venv, if present)
 #   3. uv run --no-project --with ...    (ephemeral env; nothing to install)
 #   4. alembic on PATH
@@ -32,15 +33,16 @@ YELLOW='\033[1;33m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
+# ALEMBIC is an array so a repo path containing spaces survives (CITY-666).
 resolve_alembic() {
   if [[ -n "${ALEMBIC_CMD:-}" ]]; then
-    ALEMBIC="$ALEMBIC_CMD"
+    ALEMBIC=("$ALEMBIC_CMD")
   elif [[ -x "$REPO_ROOT/.venv/bin/alembic" ]]; then
-    ALEMBIC="$REPO_ROOT/.venv/bin/alembic"
+    ALEMBIC=("$REPO_ROOT/.venv/bin/alembic")
   elif command -v uv &>/dev/null; then
-    ALEMBIC="uv run --no-project --quiet --with alembic --with sqlalchemy[asyncio] --with python-dotenv alembic"
+    ALEMBIC=(uv run --no-project --quiet --with alembic --with "sqlalchemy[asyncio]" --with python-dotenv alembic)
   elif command -v alembic &>/dev/null; then
-    ALEMBIC="alembic"
+    ALEMBIC=(alembic)
   else
     echo -e "${RED}Error: alembic not found. Install uv, or: pip install alembic 'sqlalchemy[asyncio]' python-dotenv${RESET}" >&2
     exit 2
@@ -48,7 +50,7 @@ resolve_alembic() {
 }
 
 run_alembic() {
-  (cd "$API_DIR" && $ALEMBIC -c alembic.ini "$@")
+  (cd "$API_DIR" && "${ALEMBIC[@]}" -c alembic.ini "$@")
 }
 
 # Prints newline-separated head revision IDs. Any alembic failure must FAIL LOUD
@@ -66,14 +68,29 @@ get_heads() {
   printf '%s\n' "$out" | awk '/\(head\)/ {print $1}'
 }
 
-# Prints "<revision> <file>" for every revision ID defined in more than one
-# file. Alembic only warns on duplicates and silently keeps one of them, so the
-# heads count alone can look healthy. Static AST scan, stdlib only.
-find_duplicate_revisions() {
+# Static scan of versions/*.py (stdlib AST, no imports, no database). Prints one
+# problem per line:
+#   dup <revision> <file>             revision ID defined in more than one file
+#   dangling <file> <down_revision>   down_revision names a revision no file defines
+# Alembic only warns on duplicates and silently keeps one of them, so the heads
+# count alone can look healthy; and a dangling parent makes `alembic heads`
+# crash, which would otherwise surface as exit 2 ("environment broken") even
+# though it is a chain bug. Exits non-zero only if a file can't be parsed.
+scan_chain() {
   python3 - "$VERSIONS_DIR" <<'PY'
 import ast, collections, pathlib, sys
 
-seen = collections.defaultdict(list)
+def const_strs(value):
+    """String revision IDs in a str / tuple / list constant (None -> none)."""
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return [value.value]
+    if isinstance(value, (ast.Tuple, ast.List)):
+        return [e.value for e in value.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+    return []
+
+defined = collections.defaultdict(list)
+parents = []  # (file, down_revision)
 for path in sorted(pathlib.Path(sys.argv[1]).glob("*.py")):
     for node in ast.parse(path.read_text(), filename=str(path)).body:
         target = value = None
@@ -81,13 +98,20 @@ for path in sorted(pathlib.Path(sys.argv[1]).glob("*.py")):
             target, value = node.targets[0], node.value
         elif isinstance(node, ast.AnnAssign):
             target, value = node.target, node.value
-        if (isinstance(target, ast.Name) and target.id == "revision"
-                and isinstance(value, ast.Constant) and isinstance(value.value, str)):
-            seen[value.value].append(path.name)
-for rev, files in sorted(seen.items()):
+        if not isinstance(target, ast.Name) or value is None:
+            continue
+        if target.id == "revision":
+            for rev in const_strs(value):
+                defined[rev].append(path.name)
+        elif target.id == "down_revision":
+            parents.extend((path.name, rev) for rev in const_strs(value))
+for rev, files in sorted(defined.items()):
     if len(files) > 1:
         for f in files:
-            print(rev, f)
+            print("dup", rev, f)
+for f, rev in parents:
+    if rev not in defined:
+        print("dangling", f, rev)
 PY
 }
 
@@ -96,16 +120,26 @@ count_lines() {
 }
 
 cmd_check() {
-  local failed=0 dups heads count
-  dups=$(find_duplicate_revisions) || {
+  local failed=0 problems dups dangling heads count
+  problems=$(scan_chain) || {
     echo -e "${RED}Error: could not scan $VERSIONS_DIR for revision IDs.${RESET}" >&2
     exit 2
   }
+  dups=$(printf '%s\n' "$problems" | awk '$1 == "dup" {print $2, $3}')
+  dangling=$(printf '%s\n' "$problems" | awk '$1 == "dangling" {print $2 " -> down_revision " $3}')
   if [[ -n "$dups" ]]; then
     echo -e "${RED}${BOLD}Duplicate Alembic revision IDs:${RESET}"
     printf '%s\n' "$dups" | sed 's/^/  - /'
     echo "Give one of each pair a new revision ID and repoint its children's down_revision."
     failed=1
+  fi
+  if [[ -n "$dangling" ]]; then
+    # A chain bug, not an environment fault: alembic can't even load this
+    # chain, so report it here and stop before `alembic heads` crashes on it.
+    echo -e "${RED}${BOLD}down_revision points at a revision that no migration defines:${RESET}"
+    printf '%s\n' "$dangling" | sed 's/^/  - /'
+    echo "Point it at an existing revision (bin/migrations heads lists the current head)."
+    exit 1
   fi
 
   resolve_alembic
@@ -191,7 +225,8 @@ cmd_help() {
 Usage: bin/migrations <command> [options]
 
 Commands:
-  check       Fail on multiple heads or duplicate revision IDs. Used in CI.
+  check       Fail on multiple heads, duplicate revision IDs or a dangling
+              down_revision. Used in CI.
   heads       List current Alembic heads.
   fix-heads   Generate an empty merge migration for multiple heads.
               --dry-run   show what would run
@@ -200,7 +235,8 @@ Commands:
 
 Exit codes:
   0  OK
-  1  Multiple heads or duplicate revision ('check'), or usage error
+  1  Chain bug ('check': multiple heads, duplicate revision, dangling
+     down_revision), or usage error
   2  Alembic unavailable or failed (environment problem, not a chain problem)
 EOF
 }
