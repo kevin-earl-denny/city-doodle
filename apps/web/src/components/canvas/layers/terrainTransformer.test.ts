@@ -166,15 +166,13 @@ describe("transformTileFeatures", () => {
     expect(result.beaches[0].beachType).toBe("ocean");
   });
 
-  it("transforms bay polygon as ocean water feature", () => {
+  it("does not render bay polygons as extra water (CITY-690)", () => {
     const coords = [[[0, 0], [30, 0], [30, 20], [0, 20], [0, 0]]];
     const result = transformTileFeatures(
       fc(feature("bay", { type: "Polygon", coordinates: coords }, { bay_size: "harbor" }))
     );
 
-    expect(result.water).toHaveLength(1);
-    expect(result.water[0].type).toBe("ocean");
-    expect(result.water[0].id).toBe("bay-1");
+    expect(result.water).toHaveLength(0);
   });
 
   it("transforms lagoon polygon as ocean water feature", () => {
@@ -310,7 +308,7 @@ describe("transformTileFeatures", () => {
       )
     );
 
-    expect(result.water).toHaveLength(3); // ocean + lake + bay
+    expect(result.water).toHaveLength(2); // ocean + lake (bays aren't drawn)
     expect(result.coastlines).toHaveLength(1);
     expect(result.rivers).toHaveLength(1);
     expect(result.contours).toHaveLength(1);
@@ -318,7 +316,6 @@ describe("transformTileFeatures", () => {
 
     expect(result.water[0].id).toBe("ocean-1");
     expect(result.water[1].id).toBe("lake-1");
-    expect(result.water[2].id).toBe("bay-1");
   });
 
   it("skips features without feature_type property", () => {
@@ -661,11 +658,10 @@ describe("CITY-586: pipeline round-trip with realistic GeoJSON", () => {
   it("assigns correct feature IDs", () => {
     const result = transformTileFeatures(REALISTIC_GEOJSON);
 
-    // Water: ocean (from coastline) + lake + bay = 3 entries
-    expect(result.water).toHaveLength(3);
+    // Water: ocean (from coastline) + lake; bays aren't drawn (CITY-690)
+    expect(result.water).toHaveLength(2);
     expect(result.water[0].id).toBe("ocean-1");
     expect(result.water[1].id).toBe("lake-1");
-    expect(result.water[2].id).toBe("bay-1");
 
     expect(result.coastlines).toHaveLength(1);
     expect(result.coastlines[0].id).toBe("coast-1");

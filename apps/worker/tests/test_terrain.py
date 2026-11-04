@@ -1,8 +1,13 @@
 """Tests for terrain generation module."""
 
 import pytest
-from city_worker.terrain import BayConfig, TerrainConfig, TerrainGenerator, extract_bays, generate_terrain_3x3
-from city_worker.terrain.bays import _classify_bay_size
+from city_worker.terrain import (
+    BayConfig,
+    TerrainConfig,
+    TerrainGenerator,
+    extract_bays,
+    generate_terrain_3x3,
+)
 from city_worker.terrain.barrier_islands import (
     BarrierIslandConfig,
     calculate_coastline_normal,
@@ -13,6 +18,7 @@ from city_worker.terrain.barrier_islands import (
     generate_island_chain,
     generate_lagoon,
 )
+from city_worker.terrain.bays import _classify_bay_size
 from city_worker.terrain.noise import SeededNoise, apply_erosion, generate_heightfield
 from city_worker.terrain.types import TileCoord
 from city_worker.terrain.water import (
@@ -20,6 +26,8 @@ from city_worker.terrain.water import (
     extract_beaches,
     extract_coastlines,
 )
+
+
 class TestSeededNoise:
     """Tests for the SeededNoise class."""
 
@@ -251,7 +259,6 @@ class TestSeamlessBorders:
         tile edge (CITY-674: bay erosion) produced cliffs ~17x larger.
         """
         import numpy as np
-
         from city_worker.terrain import apply_seed_variation
 
         kw = apply_seed_variation(setting, seed=42)
@@ -342,14 +349,16 @@ class TestWaterFeatures:
         f1 = extract_coastlines(
             heightfield=heightfield,
             water_level=0.35,
-            tile_x=0, tile_y=0,
+            tile_x=0,
+            tile_y=0,
             tile_size=1000.0,
             fractal_seed=42,
         )
         f2 = extract_coastlines(
             heightfield=heightfield,
             water_level=0.35,
-            tile_x=0, tile_y=0,
+            tile_x=0,
+            tile_y=0,
             tile_size=1000.0,
             fractal_seed=42,
         )
@@ -364,7 +373,7 @@ class TestWaterFeatures:
 
         # Create L-shaped land mass (has concavity)
         heightfield = np.zeros((32, 32))
-        heightfield[4:28, 4:16] = 0.6   # vertical bar
+        heightfield[4:28, 4:16] = 0.6  # vertical bar
         heightfield[16:28, 4:28] = 0.6  # horizontal bar
 
         features = extract_coastlines(
@@ -446,7 +455,6 @@ class TestNoisyCoastline:
 
     def test_denoise_keeps_edge_touching_regions(self):
         import numpy as np
-
         from city_worker.terrain.water import denoise_water_mask
 
         mask = np.zeros((128, 128), dtype=bool)
@@ -717,7 +725,6 @@ class TestBeachGeneration:
             assert "beach_type" in feature.properties
             assert feature.properties["beach_type"] in ["ocean", "bay", "lake", "river"]
 
-
     def test_lake_beach_coverage_capped(self):
         """Lake beaches should cover at most ~20% of the lake perimeter (CITY-547)."""
         import numpy as np
@@ -733,8 +740,7 @@ class TestBeachGeneration:
             for j in range(8, 24):
                 if heightfield[i, j] > 0.30:
                     if any(
-                        0 <= i + di < 32 and 0 <= j + dj < 32
-                        and heightfield[i + di, j + dj] < 0.30
+                        0 <= i + di < 32 and 0 <= j + dj < 32 and heightfield[i + di, j + dj] < 0.30
                         for di in [-1, 0, 1]
                         for dj in [-1, 0, 1]
                     ):
@@ -744,8 +750,10 @@ class TestBeachGeneration:
         tile_size = 1000.0
         cell_size = tile_size / 32
         lake_poly = box(
-            10 * cell_size, 10 * cell_size,
-            22 * cell_size, 22 * cell_size,
+            10 * cell_size,
+            10 * cell_size,
+            22 * cell_size,
+            22 * cell_size,
         )
 
         features = extract_beaches(
@@ -786,7 +794,7 @@ class TestBayGeneration:
         hf = np.full((64, 64), 0.6)
         hf[:, 44:] = 0.2  # open sea along the right edge
         top = 32 - width // 2
-        hf[top:top + width, 44 - depth:44] = 0.2  # inlet cut into the land
+        hf[top : top + width, 44 - depth : 44] = 0.2  # inlet cut into the land
         return hf
 
     def test_classify_bay_size(self):
@@ -810,8 +818,15 @@ class TestBayGeneration:
         assert bay.type == "bay"
         assert bay.geometry["type"] == "Polygon"
         for key in (
-            "area", "bay_size", "entrance_width", "depth", "depth_ratio",
-            "avg_water_depth", "max_water_depth", "concavity_angle", "is_river_mouth",
+            "area",
+            "bay_size",
+            "entrance_width",
+            "depth",
+            "depth_ratio",
+            "avg_water_depth",
+            "max_water_depth",
+            "concavity_angle",
+            "is_river_mouth",
         ):
             assert key in bay.properties
         assert bay.properties["bay_size"] in ("cove", "bay", "harbor")
@@ -821,10 +836,9 @@ class TestBayGeneration:
     def test_bay_never_covers_land(self):
         """Bay polygons only cover water cells, on real generated terrain."""
         import numpy as np
+        from city_worker.terrain.noise import generate_heightfield
         from shapely.geometry import box, shape
         from shapely.ops import unary_union
-
-        from city_worker.terrain.noise import generate_heightfield
 
         ts, res, wl = 256.0, 64, 0.45
         cell = ts / res
@@ -832,10 +846,12 @@ class TestBayGeneration:
         for seed in range(8):
             hf = generate_heightfield(seed, 1, 1, ts, res, scale=0.012)
             features = extract_bays(hf, wl, 1, 1, ts)
-            land = unary_union([
-                box(ts + j * cell, ts + i * cell, ts + (j + 1) * cell, ts + (i + 1) * cell)
-                for i, j in zip(*np.nonzero(hf >= wl))
-            ])
+            land = unary_union(
+                [
+                    box(ts + j * cell, ts + i * cell, ts + (j + 1) * cell, ts + (i + 1) * cell)
+                    for i, j in zip(*np.nonzero(hf >= wl))
+                ]
+            )
             for f in features:
                 overlap = shape(f.geometry).intersection(land).area
                 # Denoising may absorb a few single-cell islets into the bay
@@ -874,6 +890,19 @@ class TestBayGeneration:
         assert len(bays) == 1
         assert bays[0].properties["is_river_mouth"] is True
 
+    def test_bay_area_matches_geometry(self):
+        """A bay's area property equals its emitted polygon's area (CITY-690)."""
+        from city_worker.terrain.noise import generate_heightfield
+        from shapely.geometry import shape
+
+        checked = 0
+        for seed in range(6):
+            hf = generate_heightfield(seed, 1, 1, 256.0, 128, scale=0.012)
+            for f in extract_bays(hf, 0.45, 1, 1, 256.0):
+                assert f.properties["area"] == pytest.approx(shape(f.geometry).area)
+                checked += 1
+        assert checked > 0
+
     def test_bay_generation_deterministic(self):
         """Same terrain produces identical bays."""
         hf = self._inlet_heightfield()
@@ -890,9 +919,7 @@ class TestBayGeneration:
             bay_enabled=False,
         )
         result = TerrainGenerator(config).generate_3x3(center_tx=0, center_ty=0)
-        bay_count = sum(
-            1 for tile in result.all_tiles() for f in tile.features if f.type == "bay"
-        )
+        bay_count = sum(1 for tile in result.all_tiles() for f in tile.features if f.type == "bay")
         assert bay_count == 0
 
     def test_terrain_generator_includes_bays(self):
@@ -1017,7 +1044,6 @@ class TestBarrierIslandGeneration:
 
     def test_generate_island_chain_creates_polygons(self):
         """Island chain generation should create valid polygons."""
-        import numpy as np
 
         config = BarrierIslandConfig()
 
@@ -1050,7 +1076,6 @@ class TestBarrierIslandGeneration:
 
     def test_generate_lagoon_creates_polygon_between_coast_and_islands(self):
         """Lagoon generation should create a polygon."""
-        import numpy as np
 
         config = BarrierIslandConfig()
 
@@ -1171,9 +1196,7 @@ class TestBarrierIslandGeneration:
         # Count barrier island features across all tiles
         island_types = {"barrier_island", "lagoon", "tidal_flat", "dune_ridge", "inlet"}
         island_count = sum(
-            1 for tile in result.all_tiles()
-            for f in tile.features
-            if f.type in island_types
+            1 for tile in result.all_tiles() for f in tile.features if f.type in island_types
         )
 
         assert island_count == 0
@@ -1248,7 +1271,7 @@ class TestBarrierIslandGeneration:
 
         # If islands were generated, they should be offset from coast
         for island in islands:
-            coords = island.geometry["coordinates"][0]
+            assert island.geometry["coordinates"][0], "barrier island has an empty ring"
             # All x-coordinates of the island should be less than the coastline x
             # (since water is on left and islands form in the water)
             # The coastline is around j=25-30 which maps to x ~390-470 at tile_size=1000
@@ -1365,8 +1388,14 @@ class TestGeographicPresets:
         from city_worker.terrain.geographic_presets import GEOGRAPHIC_PRESETS
 
         expected = [
-            "coastal", "bay_harbor", "river_valley", "lakefront",
-            "inland", "island", "peninsula", "delta",
+            "coastal",
+            "bay_harbor",
+            "river_valley",
+            "lakefront",
+            "inland",
+            "island",
+            "peninsula",
+            "delta",
         ]
         for setting in expected:
             assert setting in GEOGRAPHIC_PRESETS, f"Missing preset for {setting}"
@@ -1391,8 +1420,16 @@ class TestGeographicPresets:
         """All presets should produce a valid TerrainConfig."""
         from city_worker.terrain.geographic_presets import get_preset_overrides
 
-        for setting in ["coastal", "bay_harbor", "river_valley", "lakefront",
-                        "inland", "island", "peninsula", "delta"]:
+        for setting in [
+            "coastal",
+            "bay_harbor",
+            "river_valley",
+            "lakefront",
+            "inland",
+            "island",
+            "peninsula",
+            "delta",
+        ]:
             overrides = get_preset_overrides(setting)
             overrides["world_seed"] = 42
             config = TerrainConfig(**overrides)
@@ -1426,8 +1463,16 @@ class TestGeographicPresets:
         """Each preset should generate terrain without errors."""
         from city_worker.terrain.geographic_presets import get_preset_overrides
 
-        for setting in ["coastal", "bay_harbor", "river_valley", "lakefront",
-                        "inland", "island", "peninsula", "delta"]:
+        for setting in [
+            "coastal",
+            "bay_harbor",
+            "river_valley",
+            "lakefront",
+            "inland",
+            "island",
+            "peninsula",
+            "delta",
+        ]:
             overrides = get_preset_overrides(setting)
             overrides["world_seed"] = 42
             overrides["resolution"] = 16
@@ -1495,10 +1540,10 @@ class TestSeedBasedVariety:
         for seed in range(100):
             overrides = apply_seed_variation("coastal", seed=seed)
             assert 0.05 <= overrides["water_level"] <= 0.65
-            config = TerrainConfig(world_seed=seed, **{
-                k: v for k, v in overrides.items()
-                if k in TerrainConfig.__dataclass_fields__
-            })
+            config = TerrainConfig(
+                world_seed=seed,
+                **{k: v for k, v in overrides.items() if k in TerrainConfig.__dataclass_fields__},
+            )
             assert config is not None
 
 
@@ -1545,8 +1590,13 @@ class TestRiverImprovements:
             hf[i, 16] = 0.2 + i * 0.005  # Gentle downhill slope
 
         rivers = extract_rivers(
-            hf, water_level=0.25, tile_x=0, tile_y=0,
-            tile_size=500.0, flow_threshold=5.0, min_length=5,
+            hf,
+            water_level=0.25,
+            tile_x=0,
+            tile_y=0,
+            tile_size=500.0,
+            flow_threshold=5.0,
+            min_length=5,
         )
         if rivers:
             for river in rivers:
@@ -1566,8 +1616,13 @@ class TestRiverImprovements:
             hf[i, 16] = 0.2 + i * 0.005
 
         rivers = extract_rivers(
-            hf, water_level=0.25, tile_x=0, tile_y=0,
-            tile_size=500.0, flow_threshold=5.0, min_length=5,
+            hf,
+            water_level=0.25,
+            tile_x=0,
+            tile_y=0,
+            tile_size=500.0,
+            flow_threshold=5.0,
+            min_length=5,
         )
         if rivers:
             for river in rivers:
@@ -1600,8 +1655,13 @@ class TestRiverImprovements:
             hf[i, int(center)] = 0.5 - i * 0.004
 
         rivers = extract_rivers(
-            hf, water_level=0.25, tile_x=0, tile_y=0,
-            tile_size=256.0, flow_threshold=5.0, min_length=5,
+            hf,
+            water_level=0.25,
+            tile_x=0,
+            tile_y=0,
+            tile_size=256.0,
+            flow_threshold=5.0,
+            min_length=5,
         )
         assert rivers
         for river in rivers:
@@ -1615,16 +1675,20 @@ class TestRiverImprovements:
 
     def test_simplified_river_stays_on_smoothed_curve(self):
         """CITY-683: simplification only drops points within tolerance."""
-        from shapely.geometry import LineString
-
         from city_worker.terrain.water import RIVER_OUTPUT_SIMPLIFY_CELLS, _chaikin_smooth
+        from shapely.geometry import LineString
 
         cell_size = 2.0
         path = [(0, 0), (10, 6), (20, 2), (30, 12), (40, 4)]
         smoothed = LineString(_chaikin_smooth(path, iterations=6))
-        simplified = smoothed.simplify(cell_size * RIVER_OUTPUT_SIMPLIFY_CELLS, preserve_topology=False)
+        simplified = smoothed.simplify(
+            cell_size * RIVER_OUTPUT_SIMPLIFY_CELLS, preserve_topology=False
+        )
         assert len(simplified.coords) < len(smoothed.coords) / 4
-        assert simplified.hausdorff_distance(smoothed) <= cell_size * RIVER_OUTPUT_SIMPLIFY_CELLS + 1e-9
+        assert (
+            simplified.hausdorff_distance(smoothed)
+            <= cell_size * RIVER_OUTPUT_SIMPLIFY_CELLS + 1e-9
+        )
 
     @staticmethod
     def _river(coords, **props):
@@ -1694,11 +1758,17 @@ class TestGeographicMasks:
 
     def test_all_settings_have_registered_masks(self):
         """Every geographic setting should have a mask in the registry."""
-        from city_worker.terrain.geographic_masks import get_mask, identity_mask
+        from city_worker.terrain.geographic_masks import get_mask
 
         settings = [
-            "coastal", "bay_harbor", "river_valley", "lakefront",
-            "inland", "island", "peninsula", "delta",
+            "coastal",
+            "bay_harbor",
+            "river_valley",
+            "lakefront",
+            "inland",
+            "island",
+            "peninsula",
+            "delta",
         ]
         for setting in settings:
             mask = get_mask(setting)
@@ -1713,9 +1783,7 @@ class TestGeographicMasks:
 
     def test_register_mask_replaces_existing(self):
         """register_mask should replace the existing mask for a setting."""
-        import numpy as np
         from city_worker.terrain.geographic_masks import (
-            MaskContext,
             get_mask,
             identity_mask,
             register_mask,
@@ -1736,7 +1804,6 @@ class TestGeographicMasks:
         import numpy as np
         from city_worker.terrain.geographic_masks import (
             apply_geographic_mask,
-            identity_mask,
             register_mask,
         )
 
@@ -1747,14 +1814,20 @@ class TestGeographicMasks:
         try:
             hf = np.full((16, 16), 0.8)
             result = apply_geographic_mask(
-                hf, "_test_overflow", tx=0, ty=0,
-                tile_size=500.0, resolution=16, seed=42,
+                hf,
+                "_test_overflow",
+                tx=0,
+                ty=0,
+                tile_size=500.0,
+                resolution=16,
+                seed=42,
             )
             assert result.max() <= 1.0
             assert result.min() >= 0.0
         finally:
             # Clean up
             from city_worker.terrain.geographic_masks import _MASK_REGISTRY
+
             _MASK_REGISTRY.pop("_test_overflow", None)
 
     def test_apply_geographic_mask_clamps_negative(self):
@@ -1772,12 +1845,18 @@ class TestGeographicMasks:
         try:
             hf = np.full((16, 16), 0.2)
             result = apply_geographic_mask(
-                hf, "_test_underflow", tx=0, ty=0,
-                tile_size=500.0, resolution=16, seed=42,
+                hf,
+                "_test_underflow",
+                tx=0,
+                ty=0,
+                tile_size=500.0,
+                resolution=16,
+                seed=42,
             )
             assert result.min() >= 0.0
         finally:
             from city_worker.terrain.geographic_masks import _MASK_REGISTRY
+
             _MASK_REGISTRY.pop("_test_underflow", None)
 
     def test_mask_context_has_correct_fields(self):
@@ -1821,8 +1900,13 @@ class TestGeographicMasks:
         try:
             hf = np.zeros((16, 16))
             apply_geographic_mask(
-                hf, "_test_spy", tx=5, ty=-3,
-                tile_size=1000.0, resolution=16, seed=99,
+                hf,
+                "_test_spy",
+                tx=5,
+                ty=-3,
+                tile_size=1000.0,
+                resolution=16,
+                seed=99,
             )
             assert captured_ctx["tx"] == 5
             assert captured_ctx["ty"] == -3
@@ -1831,6 +1915,7 @@ class TestGeographicMasks:
             assert captured_ctx["seed"] == 99
         finally:
             from city_worker.terrain.geographic_masks import _MASK_REGISTRY
+
             _MASK_REGISTRY.pop("_test_spy", None)
 
     def test_terrain_config_accepts_geographic_setting(self):
@@ -1845,8 +1930,7 @@ class TestGeographicMasks:
 
     def test_generator_applies_mask_in_pipeline(self):
         """TerrainGenerator should apply the geographic mask during generation."""
-        import numpy as np
-        from city_worker.terrain.geographic_masks import register_mask, identity_mask
+        from city_worker.terrain.geographic_masks import identity_mask, register_mask
 
         mask_called = {"count": 0}
 
@@ -1869,12 +1953,21 @@ class TestGeographicMasks:
         finally:
             register_mask("_test_counting", identity_mask)
             from city_worker.terrain.geographic_masks import _MASK_REGISTRY
+
             _MASK_REGISTRY.pop("_test_counting", None)
 
     def test_all_presets_generate_with_mask_pipeline(self):
         """All geographic settings should generate terrain through the mask pipeline."""
-        for setting in ["coastal", "bay_harbor", "river_valley", "lakefront",
-                        "inland", "island", "peninsula", "delta"]:
+        for setting in [
+            "coastal",
+            "bay_harbor",
+            "river_valley",
+            "lakefront",
+            "inland",
+            "island",
+            "peninsula",
+            "delta",
+        ]:
             config = TerrainConfig(
                 world_seed=42,
                 geographic_setting=setting,
@@ -2042,13 +2135,17 @@ class TestIslandMask:
         hf = np.full((32, 32), 0.5)
         fractions = []
         for seed in range(20):
-            world = np.block([
+            world = np.block(
                 [
-                    island_mask(hf, MaskContext(tx=tx, ty=ty, tile_size=500.0, resolution=32, seed=seed))
-                    for tx in range(3)
+                    [
+                        island_mask(
+                            hf, MaskContext(tx=tx, ty=ty, tile_size=500.0, resolution=32, seed=seed)
+                        )
+                        for tx in range(3)
+                    ]
+                    for ty in range(3)
                 ]
-                for ty in range(3)
-            ])
+            )
             fractions.append((world > 0.42).mean())
         assert 0.3 <= np.mean(fractions) <= 0.55, f"mean land fraction {np.mean(fractions):.2f}"
         assert min(fractions) >= 0.15, f"smallest island {min(fractions):.2f} too small"
@@ -2126,13 +2223,17 @@ class TestIslandMask:
         found_satellite = False
 
         for seed in range(60):
-            world = np.block([
+            world = np.block(
                 [
-                    island_mask(hf, MaskContext(tx=tx, ty=ty, tile_size=ts, resolution=res, seed=seed))
-                    for tx in range(3)
+                    [
+                        island_mask(
+                            hf, MaskContext(tx=tx, ty=ty, tile_size=ts, resolution=res, seed=seed)
+                        )
+                        for tx in range(3)
+                    ]
+                    for ty in range(3)
                 ]
-                for ty in range(3)
-            ])
+            )
             if ndimage.label(world > 0.42)[1] > 1:
                 found_satellite = True
                 break
@@ -2209,9 +2310,7 @@ class TestPeninsulaMask:
         q3 = result[16:, :16].mean()
         q4 = result[16:, 16:].mean()
         quadrants = [q1, q2, q3, q4]
-        assert max(quadrants) - min(quadrants) > 0.1, (
-            f"Quadrants too uniform: {quadrants}"
-        )
+        assert max(quadrants) - min(quadrants) > 0.1, f"Quadrants too uniform: {quadrants}"
 
     def test_peninsula_generates_through_full_pipeline(self):
         """Peninsula setting should produce valid terrain through the generator."""
@@ -2255,8 +2354,7 @@ class TestRiverValleyMask:
         ctx = MaskContext(tx=1, ty=1, tile_size=500.0, resolution=32, seed=42)
         result = river_valley_mask(hf, ctx)
         # Average of full tile vs average of edges
-        edge_vals = np.concatenate([result[0, :], result[-1, :],
-                                    result[:, 0], result[:, -1]])
+        edge_vals = np.concatenate([result[0, :], result[-1, :], result[:, 0], result[:, -1]])
         center_row = result[16, :]
         # At least some edge values should be higher than the lowest center values
         assert edge_vals.mean() > center_row.min()
@@ -2342,9 +2440,7 @@ class TestBayHarborMask:
         # Compare left half vs right half — one should be higher
         left = result[:, :16].mean()
         right = result[:, 16:].mean()
-        assert abs(left - right) > 0.02, (
-            f"No gradient detected: left={left:.3f} right={right:.3f}"
-        )
+        assert abs(left - right) > 0.02, f"No gradient detected: left={left:.3f} right={right:.3f}"
 
     def test_bay_creates_depression(self):
         """The bay should create a depression below the surrounding land."""
