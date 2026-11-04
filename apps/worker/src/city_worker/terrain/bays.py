@@ -213,6 +213,10 @@ def extract_bays(
             continue
 
         entrance_width = float(mouth.sum()) * cell_size
+        # Mouth centre in world coordinates (cell centres)
+        mi, mj = np.nonzero(mouth)
+        mouth_x = tile_x * tile_size + (region[1].start + mj.mean() + 0.5) * cell_size
+        mouth_y = tile_y * tile_size + (region[0].start + mi.mean() + 0.5) * cell_size
         # Depth: farthest a bay cell sits from the open-water mouth
         depth_cells = ndimage.distance_transform_edt(~mouth)
         depth = float(depth_cells[bay].max()) * cell_size
@@ -238,6 +242,7 @@ def extract_bays(
             # Enclosure expressed on the same 0-180 scale as the config
             "concavity_angle": enclosure * 180.0,
             "is_river_mouth": is_river_mouth,
+            "mouth": [float(mouth_x), float(mouth_y)],
         }
         if is_river_mouth:
             properties["flow_accumulation"] = flow_at_mouth

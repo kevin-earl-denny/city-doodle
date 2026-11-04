@@ -997,6 +997,28 @@ class TestBayGeneration:
                 checked += 1
         assert checked > 0
 
+    def test_bay_beaches_kept_near_mouth_dropped_deep_inside(self):
+        """Harbor beaches thin out with depth: fewer, not none (CITY-691)."""
+        from shapely.geometry import box
+
+        from city_worker.terrain.water import _bay_refs, _deep_in_bay
+
+        # Inlet cells: rows 24-39, columns 24-43; mouth at x = 176 (col 44)
+        bays = extract_bays(self._inlet_heightfield(), 0.35, 0, 0, 256.0)
+        assert len(bays) == 1
+        assert "mouth" in bays[0].properties
+        refs = _bay_refs(bays)
+
+        cell = 4.0
+        # Beach strips along the inlet's north shore, half land / half water
+        head_beach = box(24 * cell, 23 * cell, 30 * cell, 25 * cell)
+        mouth_beach = box(38 * cell, 23 * cell, 44 * cell, 25 * cell)
+        open_coast_beach = box(44 * cell, 4 * cell, 46 * cell, 10 * cell)
+
+        assert _deep_in_bay(head_beach, refs)
+        assert not _deep_in_bay(mouth_beach, refs)
+        assert not _deep_in_bay(open_coast_beach, refs)
+
     def test_bay_generation_deterministic(self):
         """Same terrain produces identical bays."""
         hf = self._inlet_heightfield()

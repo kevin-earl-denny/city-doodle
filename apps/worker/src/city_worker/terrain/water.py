@@ -8,7 +8,7 @@ import shapely
 from numpy.typing import NDArray
 from scipy.ndimage import binary_dilation, label
 from shapely.errors import GEOSException, TopologicalError
-from shapely.geometry import LineString, MultiPolygon, Polygon
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon, shape
 
 from city_worker.terrain.types import DEFAULT_LAKE_TYPE, LakeType, TerrainFeature
 
@@ -1012,6 +1012,43 @@ def _split_beach_region(
     return segments if segments else [region_cells]
 
 
+# A beach lines a bay when at least this share of its polygon (its water
+# fringe) lies in the bay; it is dropped when it also sits farther than
+# BAY_BEACH_INNER_FRACTION of the bay's depth from the mouth (CITY-691).
+BAY_BEACH_MIN_OVERLAP = 0.25
+BAY_BEACH_INNER_FRACTION = 0.75
+
+
+def _bay_refs(
+    bay_features: list[TerrainFeature] | None,
+) -> list[tuple[Polygon, Point, float]]:
+    """(polygon, mouth point, depth) for each bay with usable geometry."""
+    refs: list[tuple[Polygon, Point, float]] = []
+    for f in bay_features or []:
+        mouth = f.properties.get("mouth")
+        depth = f.properties.get("depth", 0.0)
+        if not mouth or depth <= 0:
+            continue
+        refs.append((shape(f.geometry), Point(mouth), float(depth)))
+    return refs
+
+
+def _deep_in_bay(beach: Polygon, bay_refs: list[tuple[Polygon, Point, float]]) -> bool:
+    """True if *beach* lines a bay's shore far from that bay's mouth."""
+    centroid = beach.centroid
+    for bay, mouth, depth in bay_refs:
+        try:
+            overlap = beach.intersection(bay).area
+        except (GEOSException, TopologicalError) as e:
+            logger.warning("Beach-bay intersection check failed: %s", e)
+            continue
+        if overlap < beach.area * BAY_BEACH_MIN_OVERLAP:
+            continue
+        if centroid.distance(mouth) > BAY_BEACH_INNER_FRACTION * depth:
+            return True
+    return False
+
+
 def extract_beaches(
     heightfield: NDArray[np.float64],
     water_level: float,
@@ -1026,7 +1063,7 @@ def extract_beaches(
     gap_cells: int = 4,
     seed: int = 0,
     lagoon_polygons: list[Polygon] | None = None,
-    bay_polygons: list[Polygon] | None = None,
+    bay_features: list[TerrainFeature] | None = None,
     river_lines: list[LineString] | None = None,
     lake_polygons: list[Polygon] | None = None,
 ) -> list[TerrainFeature]:
@@ -1051,8 +1088,10 @@ def extract_beaches(
         seed: Deterministic seed for segment variation
         lagoon_polygons: Lagoon polygons from barrier islands; beaches
             mostly inside a lagoon are skipped (CITY-525)
-        bay_polygons: Bay polygons; beaches mostly inside a bay are
-            skipped to keep harbors open (CITY-548)
+        bay_features: Bay features (with ``mouth`` and ``depth``
+            properties); beaches on a bay's inner shore are skipped so
+            harbors stay mostly open, while beaches near the mouth stay
+            (CITY-548, CITY-691)
         river_lines: River LineStrings; beaches overlapping a river
             buffer are skipped (CITY-546)
         lake_polygons: Lake polygons; beaches mostly inside a lake are
@@ -1063,6 +1102,7 @@ def extract_beaches(
     """
     h, w = heightfield.shape
     cell_size = tile_size / w
+    bay_refs = _bay_refs(bay_features)
 
     # Scale beach height band by width multiplier
     effective_beach_band = beach_height_band * width_multiplier
@@ -1189,20 +1229,12 @@ def extract_beaches(
                     if skip:
                         continue
 
-                # CITY-548: Skip beaches inside bays to keep
-                # harbors open to water
-                if bay_polygons:
-                    skip = False
-                    for bay in bay_polygons:
-                        try:
-                            overlap = poly.intersection(bay).area
-                            if overlap > poly.area * 0.4:
-                                skip = True
-                                break
-                        except (GEOSException, TopologicalError) as e:
-                            logger.warning("Beach-bay intersection check failed: %s", e)
-                    if skip:
-                        continue
+                # CITY-548 / CITY-691: thin out harbor beaches.  A beach
+                # on a bay's shore (it overlaps the bay through its water
+                # fringe) is dropped only when it sits deep inside the
+                # bay; beaches near the mouth keep some sand in harbors.
+                if bay_refs and _deep_in_bay(poly, bay_refs):
+                    continue
 
                 # CITY-547: Skip lake beaches at river junctions and
                 # cap lake beach coverage to ~20% of lake perimeter.
