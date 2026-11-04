@@ -1863,6 +1863,58 @@ class TestRiverImprovements:
         assert len(simplified.coords) < len(smoothed.coords) / 4
         assert simplified.hausdorff_distance(smoothed) <= cell_size * RIVER_OUTPUT_SIMPLIFY_CELLS + 1e-9
 
+    @staticmethod
+    def _river(coords, **props):
+        from city_worker.terrain.types import TerrainFeature
+
+        return TerrainFeature(
+            type="river",
+            geometry={"type": "LineString", "coordinates": coords},
+            properties=props,
+        )
+
+    def test_delta_detection_prefers_recorded_mouth_direction(self):
+        """CITY-683: delta flow direction comes from mouth_direction, not tail vertices."""
+        import numpy as np
+
+        from city_worker.terrain.deltas import detect_delta_candidates
+
+        # 32x32 tile, 1 world unit per cell, sea along the bottom rows
+        hf = np.full((32, 32), 0.6)
+        hf[28:, :] = 0.1
+        flow = np.full((32, 32), 100.0)
+        # Tail vertices run diagonally; the recorded mouth tangent points straight down
+        coords = [(4.0, 4.0), (10.0, 10.0), (16.0, 16.0), (22.0, 22.0), (26.0, 26.5)]
+        kwargs = dict(heightfield=hf, water_level=0.35, flow_accumulation=flow,
+                      tile_x=0, tile_y=0, tile_size=32.0)
+
+        with_dir = detect_delta_candidates([self._river(coords, mouth_direction=[0.0, 1.0])], **kwargs)
+        assert len(with_dir) == 1
+        assert with_dir[0].flow_direction == (0.0, 1.0)
+
+        # Without the property it falls back to the tail-vertex chord (diagonal)
+        fallback = detect_delta_candidates([self._river(coords)], **kwargs)
+        assert len(fallback) == 1
+        dx, dy = fallback[0].flow_direction
+        assert dx > 0.6 and dy > 0.6
+
+    def test_parallel_suppression_measures_length_not_vertices(self):
+        """CITY-683: a river with many vertices near another but little length near it survives."""
+        from city_worker.terrain.water import _suppress_parallel_rivers
+
+        long_river = self._river([(0.0, 0.0), (100.0, 0.0)], length=100.0)
+        # 20 vertices crowded within 2 units of long_river, then one long run far away:
+        # ~95% of vertices are near it, but only ~2% of the length is.
+        crowded = [(i * 0.1, 1.0) for i in range(20)] + [(2.0, 90.0)]
+        side_river = self._river(crowded, length=91.0)
+        kept = _suppress_parallel_rivers([long_river, side_river], proximity_threshold=2.0)
+        assert len(kept) == 2
+
+        # A river that runs alongside for most of its length is still suppressed
+        alongside = self._river([(10.0, 1.0), (60.0, 1.0)], length=50.0)
+        kept = _suppress_parallel_rivers([long_river, alongside], proximity_threshold=2.0)
+        assert kept == [long_river]
+
 
 class TestGeographicMasks:
     """Tests for geographic mask framework (CITY-386)."""
