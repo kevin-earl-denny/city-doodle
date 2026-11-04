@@ -57,7 +57,7 @@ def run(reviews: list[Review], comments: list[Review] | None = None, body: str =
 
 
 def agents(n: int) -> list[Review]:
-    return [agent(f"city-doodle-b4/review-{i}") for i in range(n)]
+    return [agent(f"city-doodle-b{i}/review") for i in range(n)]  # distinct roots
 
 
 # ── The merge bar: CodeRabbit approval, or 2 agent reviews ─────────────────
@@ -175,6 +175,63 @@ def test_author_and_its_subagents_not_counted(reviewer: str) -> None:
 def test_author_prefix_is_not_a_substring_match() -> None:
     # city-doodle-7fx is a different session from city-doodle-7f.
     assert run([agent("r1"), agent(f"{AUTHOR}x")]).passed
+
+
+# One reviewing agent = one root id: `<id>` and `<id>/...`, NFKC + case-folded.
+@pytest.mark.parametrize(
+    ("ids", "n_counted"),
+    [
+        (["reviewer-b", "reviewer-b/deep"], 1),  # reviewer + its subagent
+        (["reviewer-b/sec", "reviewer-b/logic"], 1),  # two subagents of one reviewer
+        (["reviewer-b", "Reviewer-B"], 1),  # case variants
+        (["REVIEWER-B/x", "reviewer-b"], 1),  # case + subagent
+        (["reviewer-b", "reviewer-bb"], 2),  # different roots
+        (["reviewer-a", "reviewer-b/deep"], 2),  # subagents of different reviewers
+    ],
+)
+def test_distinct_reviewers_are_distinct_root_ids(ids: list[str], n_counted: int) -> None:
+    reviews = [agent(i, at=f"2026-10-27T0{n}:00:00Z") for n, i in enumerate(ids, 1)]
+    result = run(reviews)
+    assert len(result.agents) == n_counted
+    assert result.passed is (n_counted >= 2)
+    if n_counted == 1:
+        # the latest review under the root is the one counted
+        assert result.agents == [ids[-1]]
+        assert any("counted once" in r.note for r in result.ignored)
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [
+        ["reviewer-b/deep", "reviewer-b"],  # subagent's major, then the root's pass
+        ["Reviewer-B", "reviewer-b"],  # major under another case
+        ["reviewer-b", "reviewer-b/deep"],  # root's major, subagent's later pass
+    ],
+)
+def test_major_anywhere_under_a_root_blocks(ids: list[str]) -> None:
+    reviews = [
+        agent(ids[0], verdict="major", at="2026-10-27T01:00:00Z"),
+        agent(ids[1], at="2026-10-27T02:00:00Z"),
+        *agents(2),
+    ]
+    result = run(reviews)
+    assert not result.passed
+    assert any(b.startswith(f"Major findings from {ids[0]}") for b in result.blockers)
+
+
+@pytest.mark.parametrize(
+    "reviewer",
+    [AUTHOR.upper(), f"{AUTHOR.upper()}/deep", "City-Doodle-7F/x", f"{AUTHOR}/Self"],
+)
+def test_author_exclusion_ignores_case(reviewer: str) -> None:
+    result = run([agent("r1"), agent(reviewer)])
+    assert result.agents == ["r1"] and not result.passed
+    assert any("PR author" in r.note for r in result.ignored)
+
+
+def test_author_marker_case_variant_still_excludes() -> None:
+    body = f"Summary\n\n{author_marker('City-Doodle-7F')}\n"
+    assert not run([agent("r1"), agent(AUTHOR)], body=body).passed
 
 
 def test_coderabbit_approval_on_old_head_not_counted() -> None:
@@ -509,41 +566,38 @@ def test_with_author_marker_appends_once(body: str, expected: str) -> None:
     assert _with_author_marker(body, "s1") == expected
 
 
-def test_with_author_marker_rejects_placeholder_ids() -> None:
+@pytest.mark.parametrize(("body", "author"), [("x", "<id>"), ("x", None), ("x", "")])
+def test_with_author_marker_rejects_bad_or_missing_ids(body: str, author: str | None) -> None:
     from lib.vibe.cli.main import _with_author_marker
 
     with pytest.raises(ValueError):
-        _with_author_marker("x", "<id>")
+        _with_author_marker(body, author)
 
 
-@pytest.mark.parametrize(
-    ("author_args", "env", "expected"),
-    [
-        (["--author", "city-doodle-a1"], {}, "city-doodle-a1"),
-        ([], {"CLAUDE_SESSION_NAME": "city-doodle-b2"}, "city-doodle-b2"),
-        ([], {}, None),  # generated: pr-<8 hex>
-    ],
-)
-def test_vibe_pr_adds_the_author_marker(
-    monkeypatch: pytest.MonkeyPatch, author_args: list[str], env: dict, expected: str | None
-) -> None:
-    import re
+def test_with_author_marker_keeps_an_existing_marker_without_an_id() -> None:
+    from lib.vibe.cli.main import _with_author_marker
+
+    body = f"x\n{author_marker('own')}\n"
+    assert _with_author_marker(body, None) == body
+
+
+def _invoke_vibe_pr(monkeypatch: pytest.MonkeyPatch, args: list[str], env: dict):
+    """Run `bin/vibe pr` with git, gh and the tracker stubbed; return (result, gh body)."""
     import subprocess
     from unittest.mock import patch
 
     from click.testing import CliRunner
 
     from lib.vibe.cli import main as cli
-    from lib.vibe.review_gate import parse_author
 
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     calls: list[list[str]] = []
 
-    def fake_run(args, **_kw):
-        calls.append(args)
-        return subprocess.CompletedProcess(args, 0, stdout="https://x/pull/1\n", stderr="")
+    def fake_run(argv, **_kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="https://x/pull/1\n", stderr="")
 
     with (
         patch("lib.vibe.git.branches.get_main_branch", return_value="main"),
@@ -553,25 +607,47 @@ def test_vibe_pr_adds_the_author_marker(
         patch.object(cli, "_autolink_pr_to_ticket"),
         patch("subprocess.run", side_effect=fake_run),
     ):
-        out = CliRunner().invoke(cli.main, ["pr", "--title", "t", "--body", "Body", *author_args])
+        out = CliRunner().invoke(cli.main, ["pr", "--title", "t", *args])
+    gh = next((c for c in calls if c[:3] == ["gh", "pr", "create"]), None)
+    return out, (gh[gh.index("--body") + 1] if gh else None)
+
+
+@pytest.mark.parametrize(
+    ("args", "env", "author"),
+    [
+        (["--body", "Body", "--author", "city-doodle-a1"], {}, "city-doodle-a1"),
+        (["--body", "Body"], {"CLAUDE_SESSION_NAME": "city-doodle-b2"}, "city-doodle-b2"),
+        # --author wins over the env var
+        (["--body", "Body", "--author", "a1"], {"CLAUDE_SESSION_NAME": "b2"}, "a1"),
+        # the body's own marker is kept, no id needed
+        (["--body", f"Body\n{author_marker('own')}"], {}, "own"),
+    ],
+)
+def test_vibe_pr_adds_the_author_marker(
+    monkeypatch: pytest.MonkeyPatch, args: list[str], env: dict, author: str
+) -> None:
+    from lib.vibe.review_gate import parse_author
+
+    out, body = _invoke_vibe_pr(monkeypatch, args, env)
     assert out.exit_code == 0, out.output
-    gh = calls[-1]
-    body = gh[gh.index("--body") + 1]
-    author = parse_author(body)
-    assert body.startswith("Body\n\n") and body.rstrip().endswith("-->")
-    if expected:
-        assert author == expected
-    else:
-        assert author and re.fullmatch(r"pr-[0-9a-f]{8}", author)
+    assert body is not None and body.startswith("Body\n")
+    assert parse_author(body) == author and body.rstrip().endswith("-->")
 
 
-def test_vibe_pr_rejects_a_bad_author() -> None:
-    from click.testing import CliRunner
-
-    from lib.vibe.cli.main import main
-
-    out = CliRunner().invoke(main, ["pr", "--author", "<id>"])
-    assert out.exit_code == 1 and "Invalid --author" in out.output
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--body", "Body"], "no author id"),  # never a generated id
+        ([], "no author id"),  # template body has no marker either
+        (["--body", "Body", "--author", "<id>"], "bad session id"),
+    ],
+)
+def test_vibe_pr_refuses_without_a_valid_author(
+    monkeypatch: pytest.MonkeyPatch, args: list[str], message: str
+) -> None:
+    out, body = _invoke_vibe_pr(monkeypatch, args, {})
+    assert out.exit_code == 1 and body is None
+    assert "Can't add the review-gate author marker" in out.output and message in out.output
 
 
 # ── scripts/review_gate.py: fail closed + real-git carry verification ────────
@@ -645,6 +721,56 @@ def test_pr_lookup_failure_sets_error_on_the_event_head(monkeypatch: pytest.Monk
     args = ["--pr", "14", "--repo", "o/r", "--set-status", "--head-hint", HEAD]
     assert gate.main(args) == 2
     assert [(sha, st) for sha, st, _ in gh.statuses] == [(HEAD, "pending"), (HEAD, "error")]
+
+
+def test_comment_event_lookup_failure_retries_then_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # issue_comment events carry no head SHA: nothing can be marked, so retry, then
+    # fail the job with an ::error:: annotation instead of silently keeping a stale status.
+    gate = _script()
+    gh = FakeGitHub(monkeypatch, gate, {})
+    attempts: list[int] = []
+
+    def boom(*_a):
+        attempts.append(1)
+        raise ValueError("HTTP 502")
+
+    monkeypatch.setattr(gate, "_get_pr", boom)
+    monkeypatch.setattr(gate, "_sleep", lambda _s: None)
+    assert gate.main(["--pr", "14", "--repo", "o/r", "--set-status"]) == 2
+    assert gh.statuses == [] and len(attempts) == gate.PR_LOOKUP_ATTEMPTS
+    assert "::error title=review-gate status not updated::" in capsys.readouterr().out
+
+
+def test_comment_event_lookup_recovers_on_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = _script()
+    gh = FakeGitHub(monkeypatch, gate, {14: [snap(*agents(2))]})
+    real, failures = gh.get_pr, iter([ValueError("HTTP 502")])
+
+    def flaky(*a):
+        err = next(failures, None)
+        if err:
+            raise err
+        return real(*a)
+
+    monkeypatch.setattr(gate, "_get_pr", flaky)
+    monkeypatch.setattr(gate, "_sleep", lambda _s: None)
+    assert gate.main(["--pr", "14", "--repo", "o/r", "--set-status"]) == 0
+    assert [st for _, st, _ in gh.statuses] == ["pending", "success"]
+
+
+def test_error_status_write_failure_also_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gate = _script()
+
+    def no_status(*_a):
+        raise OSError("down")
+
+    monkeypatch.setattr(gate, "set_status", no_status)
+    assert gate._error("tok", "o/r", HEAD, "boom") == 2
+    assert "::error title=review-gate status not updated::boom" in capsys.readouterr().out
 
 
 def test_sha_lookup_failure_sets_error(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -20,8 +20,12 @@ parse, or the review was edited after posting (GitHub's edit history), the
 review is invalid and blocks its head like a major: reviews must not quote
 marker examples, and a verdict can't be changed by editing.
 
+Distinct reviewers are distinct *roots*: an id and its subagents (``<id>/...``),
+compared NFKC-normalized and case-folded, are one reviewer (latest review wins;
+any major among them blocks).
+
 The PR body names its authoring agent, whose reviews (and its subagents',
-``<author>/...``) never count, on a line of its own (two different ids on such
+``<author>/...``, in any case) never count, on a line of its own (two different ids on such
 lines fail the gate; ``bin/vibe pr`` adds it):
 
     <!-- city-author session=<id> -->
@@ -272,8 +276,17 @@ def equivalent_heads(
     return chain, rejected
 
 
+def reviewer_root(reviewer: str) -> str:
+    """The reviewing agent an id belongs to: ``x``, ``X`` and ``x/deep`` are all ``x``.
+
+    ``<id>/<anything>`` is ``<id>``'s subagent, so distinctness and author
+    exclusion compare roots, NFKC-normalized and case-folded.
+    """
+    return _normalized(reviewer).split("/", 1)[0]
+
+
 def _is_reviewer_author(reviewer: str, author: str | None) -> bool:
-    return author is not None and (reviewer == author or reviewer.startswith(author + "/"))
+    return author is not None and reviewer_root(reviewer) == reviewer_root(author)
 
 
 def evaluate(
@@ -323,7 +336,8 @@ def evaluate(
             )
             result.ignored.append(Line("CodeRabbit", last.login, sha, last.state, note))
 
-    # Agent reviews on the head (or a verified carried head), grouped by reviewer.
+    # Agent reviews on the head (or a verified carried head), grouped by reviewing
+    # agent: an id and its subagents (`id/...`), in any case, are one reviewer.
     by_reviewer: dict[str, list[tuple[Review, Marker]]] = {}
     for r in everything:
         if r.login in CODERABBIT_LOGINS:
@@ -400,29 +414,34 @@ def evaluate(
                 )
             result.ignored.append(row)
             continue
-        by_reviewer.setdefault(marker.reviewer, []).append((r, marker))
+        by_reviewer.setdefault(reviewer_root(marker.reviewer), []).append((r, marker))
 
     # A major on the head blocks it for good: only a new head clears it, never a
-    # later pass from the same reviewer (fix, push, then fresh reviews).
-    for reviewer, items in by_reviewer.items():
-        majors = [(r, m) for r, m in items if m.verdict == "major"]
+    # later pass from the same reviewer or one of its subagents (fix, push, then
+    # fresh reviews).
+    for items in by_reviewer.values():
+        majors = [m for _, m in items if m.verdict == "major"]
         if majors:
             for r, m in items:
                 note = (
                     "major findings: fix, push, and get fresh reviews"
                     if m.verdict == "major"
-                    else "this reviewer posted a major on this head; it can't count here"
+                    else "this reviewer (or its subagent) posted a major on this head"
                 )
-                result.ignored.append(Line(f"review {r.id}", reviewer, m.head[:7], m.verdict, note))
-            result.blockers.append(f"Major findings from {reviewer} on this head")
+                result.ignored.append(
+                    Line(f"review {r.id}", m.reviewer, m.head[:7], m.verdict, note)
+                )
+            result.blockers.append(f"Major findings from {majors[0].reviewer} on this head")
             continue
         *earlier, (r, m) = items
         for er, em in earlier:
-            note = "same reviewer again: counted once (latest)"
-            result.ignored.append(Line(f"review {er.id}", reviewer, em.head[:7], em.verdict, note))
+            note = f"same reviewer as {m.reviewer} (id/subagent/case): counted once (latest)"
+            result.ignored.append(
+                Line(f"review {er.id}", em.reviewer, em.head[:7], em.verdict, note)
+            )
         note = "on head" if same_sha(m.head, head) else "on head (verified rebase carry-over)"
-        result.counted.append(Line(f"review {r.id}", reviewer, m.head[:7], m.verdict, note))
-        result.agents.append(reviewer)
+        result.counted.append(Line(f"review {r.id}", m.reviewer, m.head[:7], m.verdict, note))
+        result.agents.append(m.reviewer)
 
     if not result.coderabbit and len(result.agents) < result.required:
         need = result.required - len(result.agents)
@@ -438,8 +457,9 @@ def summary_markdown(result: GateResult) -> str:
     """Job summary: the policy, the outcome, what counted and what didn't."""
     policy = (
         "Mergeable when CodeRabbit's latest state-changing review is APPROVED on the current "
-        f"head, **or** at least {result.required} distinct agent reviewers (not the PR author) "
-        "posted `pass`/`minor` reviews on the current head. Agent reviews also count on a head "
+        f"head, **or** at least {result.required} distinct agent reviewers (not the PR author; an "
+        "id and its `id/...` subagents, in any case, are one reviewer) posted `pass`/`minor` "
+        "reviews on the current head. Agent reviews also count on a head "
         "carried over by a verified `city-rebase-carry`; CodeRabbit never carries. Any `major` "
         "(or an invalid or edited agent review) on the head blocks it until a new head."
     )

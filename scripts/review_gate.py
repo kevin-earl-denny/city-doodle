@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -359,13 +360,38 @@ def _get_pr(token: str, repo: str, number: int) -> dict:
     return pr
 
 
+_sleep = time.sleep  # tests stub it out
+PR_LOOKUP_ATTEMPTS = 3
+
+
+def _get_pr_with_retry(token: str, repo: str, number: int) -> dict:
+    """``_get_pr`` with backoff: with no event head to mark (issue_comment), a failed
+    lookup can't fail closed on the commit, so try harder before giving up."""
+    for attempt in range(1, PR_LOOKUP_ATTEMPTS + 1):
+        try:
+            return _get_pr(token, repo, number)
+        except Exception as exc:  # noqa: BLE001
+            if attempt == PR_LOOKUP_ATTEMPTS:
+                raise
+            print(f"review-gate: PR #{number} lookup failed ({exc}); retrying", file=sys.stderr)
+            _sleep(2**attempt)
+    raise AssertionError("unreachable")
+
+
 def _error(token: str, repo: str, sha: str | None, message: str) -> int:
     print(f"review-gate: {message}", file=sys.stderr)
     if sha:
         try:
             set_status(token, repo, sha, "error", f"review-gate errored: {message}")
+            return 2
         except Exception as inner:  # noqa: BLE001
             print(f"review-gate: also failed to set error status: {inner}", file=sys.stderr)
+    # No status could be written, so an earlier `success` on the head may survive:
+    # fail the job loudly (an annotation on the run) so it's visible and re-run.
+    print(
+        f"::error title=review-gate status not updated::{message}. The PR head's previous "
+        "review-gate status may be stale; re-run this job."
+    )  # stdout: where the Actions runner reads workflow commands
     return 2
 
 
@@ -453,7 +479,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if hint:
             set_status(token, repo, hint, "pending", "review-gate is evaluating")
-        pr = _get_pr(token, repo, args.pr)
+        pr = _get_pr(token, repo, args.pr) if hint else _get_pr_with_retry(token, repo, args.pr)
     except Exception as exc:  # noqa: BLE001
         return _error(token, repo, hint, f"PR #{args.pr}: {type(exc).__name__}: {exc}")
     if pr.get("state") != "open":

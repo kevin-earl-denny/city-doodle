@@ -696,27 +696,31 @@ def _warn_duplicate_prs(ticket_id: str, branch: str, *, skip_confirmation: bool 
 @click.option("--web", is_flag=True, help="Open PR form in the browser")
 @click.option(
     "--author",
-    help="Authoring session id for the review-gate author marker "
-    "(default: $CLAUDE_SESSION_NAME, else a generated id)",
+    help="Your session id for the review-gate author marker (default: $CLAUDE_SESSION_NAME). "
+    "Required unless the body already has a city-author line.",
 )
 def pr(title: str | None, body: str | None, web: bool, author: str | None) -> None:
     """Open a pull request for the current branch (run from your worktree when done).
 
     The body always ends with <!-- city-author session=<id> --> (unless it already
     has one): the review-gate never counts reviews by that session or its subagents.
+    The id must be the one you review under, so it is never generated.
     """
     import subprocess
-    import uuid
 
     from lib.vibe.config import load_config
     from lib.vibe.git.branches import current_branch, get_main_branch
     from lib.vibe.review_gate import author_ids
 
-    author = author or os.environ.get("CLAUDE_SESSION_NAME") or f"pr-{uuid.uuid4().hex[:8]}"
+    if not body:
+        # Use PR template if it exists
+        template = Path(".github/PULL_REQUEST_TEMPLATE.md")
+        body = template.read_text() if template.exists() else ""
+    author = author or os.environ.get("CLAUDE_SESSION_NAME") or None
     try:
-        _with_author_marker("", author)
+        body = _with_author_marker(body, author)
     except ValueError as e:
-        click.echo(f"Invalid --author: {e}", err=True)
+        click.echo(f"Can't add the review-gate author marker: {e}", err=True)
         sys.exit(1)
 
     main_branch = get_main_branch()
@@ -742,11 +746,6 @@ def pr(title: str | None, body: str | None, web: bool, author: str | None) -> No
     else:
         derived_title = _derive_pr_title(branch, config)
         args.extend(["--title", derived_title])
-    if not body:
-        # Use PR template if it exists
-        template = Path(".github/PULL_REQUEST_TEMPLATE.md")
-        body = template.read_text() if template.exists() else ""
-    body = _with_author_marker(body, author)
     args.extend(["--body", body])
     click.echo(f"Author marker: session={', '.join(author_ids(body))}")
     if web:
@@ -773,13 +772,22 @@ def pr(title: str | None, body: str | None, web: bool, author: str | None) -> No
         sys.exit(1)
 
 
-def _with_author_marker(body: str, author: str) -> str:
-    """Append the review-gate author marker unless the body already has one (CITY-637)."""
+def _with_author_marker(body: str, author: str | None) -> str:
+    """Append the review-gate author marker unless the body already has one (CITY-637).
+
+    ValueError when ``author`` is malformed, or missing and the body has no marker:
+    a made-up id would let the author's own reviews count.
+    """
     from lib.vibe.review_gate import author_ids, author_marker
 
-    marker = author_marker(author)  # ValueError on a malformed id
+    marker = author_marker(author) if author else None  # ValueError on a malformed id
     if author_ids(body):
         return body
+    if marker is None:
+        raise ValueError(
+            "no author id: pass --author <your session id> or set CLAUDE_SESSION_NAME "
+            "(the id you review under; the review-gate excludes it and its subagents)"
+        )
     return f"{body.rstrip()}\n\n{marker}\n"
 
 

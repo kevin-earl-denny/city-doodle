@@ -145,7 +145,7 @@ The required `review-gate` status (`lib/vibe/review_gate.py`) passes a PR when C
   ```
   It must be the **only** place the marker keyword appears in the review: don't quote marker examples. A second mention, a last line that doesn't parse, or **editing the review after posting** makes it invalid, and an invalid review blocks the head like a major. To change a verdict, post a new review (on a new head if it was a major).
 - `pass` = no findings, `minor` = minors or nits only, `major` = at least one major. A `major` blocks until the head moves; a later `pass` from the same reviewer on the same head doesn't clear it.
-- Your reviewer id must be unique per reviewing agent and never the author's session id (or `<author>/...`, which counts as the author's subagent). The author's id is the `city-author` line in the PR body.
+- Reviewers are counted by **root id**: `<id>` and its subagents `<id>/...` are one reviewer, compared case-insensitively (`reviewer-b`, `Reviewer-B` and `reviewer-b/deep` are all `reviewer-b`). Only the latest review under a root counts, and a `major` from any of them blocks the head. Use your own session id as the root; subagents you spawn sign `<your id>/<role>`. The author's root (the `city-author` line in the PR body) never counts.
 - After a **pure rebase**, the author can carry agent reviews to the new head with a PR comment whose own line is `<!-- city-rebase-carry v1 from=<old full sha> to=<new full sha> -->`; the gate verifies it with `git patch-id --verbatim`. CodeRabbit approval never carries.
 - Check the result with `bin/vibe review-gate <n>`: it lists what counted and why the rest didn't.
 

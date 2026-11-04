@@ -33,7 +33,7 @@ When the user invokes `/pr`:
    gh pr create --repo kevin-earl-denny/city-doodle --base main --head <branch> \
      --title "CITY-123: <ticket title>" --body-file <body file>
    ```
-   Or `bin/vibe pr --title "..." --body "..." --author <your session id>`, which appends the author marker for you (default id: `$CLAUDE_SESSION_NAME`, else a generated `pr-<hex>`).
+   Or `bin/vibe pr --title "..." --body "..." --author <your session id>`, which appends the author marker for you (default id: `$CLAUDE_SESSION_NAME`). With neither, and no marker already in the body, it refuses (exit 1): the id must be the one you review under, or your own reviews would count.
 
    **Fill in the body.** Don't leave a template skeleton, and keep the prose plain:
    - **Summary**: what changed and why, linked to the ticket.
