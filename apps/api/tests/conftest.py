@@ -101,7 +101,7 @@ async def clear_tables():
         if "postgresql" in TEST_DATABASE_URL:
             await conn.execute(
                 text(
-                    "TRUNCATE users, sessions, worlds, tiles, tile_locks, jobs, placed_seeds, districts, road_nodes, road_edges, transit_stations, transit_lines, transit_line_segments RESTART IDENTITY CASCADE"
+                    "TRUNCATE users, sessions, worlds, tiles, tile_locks, jobs, placed_seeds, districts, road_nodes, road_edges, transit_stations, transit_lines, transit_line_segments, brief_usage RESTART IDENTITY CASCADE"
                 )
             )
         else:
@@ -118,6 +118,7 @@ async def clear_tables():
             await conn.execute(text("DELETE FROM worlds"))
             await conn.execute(text("DELETE FROM sessions"))
             await conn.execute(text("DELETE FROM users"))
+            await conn.execute(text("DELETE FROM brief_usage"))
 
         # Create test users that tests expect to exist
         # These are the user IDs used in X-User-Id headers during dev mode testing

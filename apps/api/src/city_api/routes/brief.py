@@ -3,10 +3,12 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from city_api.brief.compiler import compile_brief
 from city_api.brief.schema import BriefRequest, BriefResponse
 from city_api.brief.service import BriefError, generate_brief
+from city_api.database import get_db
 from city_api.dependencies import get_current_user
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
@@ -26,6 +28,7 @@ async def create_world_brief(
     request: BriefRequest,
     user_id: UUID = Depends(get_current_user),
     _: None = Depends(_limit_body_size),
+    db: AsyncSession = Depends(get_db),
 ) -> BriefResponse:
     """Survey a described place.
 
@@ -34,7 +37,7 @@ async def create_world_brief(
     POST /worlds with the returned settings.
     """
     try:
-        raw = await generate_brief(request, user_id)
+        raw = await generate_brief(request, user_id, db)
     except BriefError as e:
         raise HTTPException(status_code=e.status, detail=e.public_message) from e
 

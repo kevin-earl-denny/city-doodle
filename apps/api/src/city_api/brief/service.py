@@ -1,12 +1,16 @@
 """Call Claude to turn a terrain description into a WorldBrief."""
 
+import json
 import logging
 import time
 from collections import deque
+from datetime import UTC, datetime
 from uuid import UUID
 
 import anthropic
 import pydantic
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from city_api.brief.compiler import compile_brief
 from city_api.brief.prompt import SYSTEM_PROMPT, build_user_message
@@ -43,7 +47,7 @@ _client: anthropic.AsyncAnthropic | None = None
 
 def _get_client() -> anthropic.AsyncAnthropic:
     global _client
-    if not settings.anthropic_api_key:
+    if not settings.brief_enabled or not settings.anthropic_api_key:
         raise BriefUnavailableError()
     if _client is None:
         # One retry with a 45s timeout keeps a slow request under ~90s wall clock.
@@ -97,9 +101,32 @@ def _check_rate_limit(user_id: UUID) -> None:
     _global.append(now)
 
 
-async def generate_brief(request: BriefRequest, user_id: UUID) -> WorldBrief:
+# Atomic upsert: works on Postgres and SQLite (>= 3.35 for RETURNING).
+_INCREMENT_SQL = text(
+    "INSERT INTO brief_usage (day, count) VALUES (:day, 1) "
+    "ON CONFLICT (day) DO UPDATE SET count = brief_usage.count + 1 "
+    "RETURNING count"
+)
+
+
+async def _check_global_daily_cap(db: AsyncSession) -> None:
+    """Count this call against the cross-machine daily cap (UTC day).
+
+    The count goes up before the model call, so every attempt is counted.
+    Failed calls still cost tokens, so that's the safe direction.
+    """
+    today = datetime.now(UTC).date()
+    count = (await db.execute(_INCREMENT_SQL, {"day": today})).scalar_one()
+    await db.commit()
+    if count > settings.brief_global_daily_limit:
+        logger.warning("brief: global daily cap reached (%s)", settings.brief_global_daily_limit)
+        raise BriefRateLimitedError()
+
+
+async def generate_brief(request: BriefRequest, user_id: UUID, db: AsyncSession) -> WorldBrief:
     client = _get_client()
     _check_rate_limit(user_id)
+    await _check_global_daily_cap(db)
 
     previous = request.previous
     if previous is not None:
@@ -109,7 +136,7 @@ async def generate_brief(request: BriefRequest, user_id: UUID) -> WorldBrief:
     try:
         response = await client.beta.messages.parse(
             model=settings.brief_model,
-            max_tokens=16000,
+            max_tokens=settings.brief_max_tokens,
             thinking={"type": "adaptive"},
             output_config={"effort": settings.brief_effort},
             # Re-run a refused request on a fallback model chosen by the API.
@@ -142,7 +169,7 @@ async def generate_brief(request: BriefRequest, user_id: UUID) -> WorldBrief:
     except anthropic.APIConnectionError as e:
         logger.error("brief: anthropic connection error: %s", e)
         raise BriefError() from e
-    except (pydantic.ValidationError, ValueError) as e:
+    except (pydantic.ValidationError, json.JSONDecodeError) as e:
         # parse() validates inside the call, so truncated or invalid JSON raises
         # here rather than reaching the stop_reason checks below. Log the
         # error type only; never echo model output to the client.

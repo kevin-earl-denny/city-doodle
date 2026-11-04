@@ -113,7 +113,7 @@ class TestPrompt:
 class TestEndpoint:
     @pytest.mark.asyncio
     async def test_returns_brief_and_compiled_settings(self, client: AsyncClient, monkeypatch):
-        async def fake_generate(request, user_id):
+        async def fake_generate(request, user_id, db):
             assert user_id == UUID(TEST_USER_ID)
             return make_brief()
 
@@ -283,8 +283,14 @@ def _install_fake(monkeypatch, *, result=None, exc=None) -> _FakeMessages:
     messages = _FakeMessages(result, exc)
     fake = types.SimpleNamespace(beta=types.SimpleNamespace(messages=messages))
     monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
+    monkeypatch.setattr(service.settings, "brief_enabled", True)
     monkeypatch.setattr(service, "_client", fake)
     monkeypatch.setattr(service, "_check_rate_limit", lambda user_id: None)
+
+    async def _no_cap(db):
+        return None
+
+    monkeypatch.setattr(service, "_check_global_daily_cap", _no_cap)
     return messages
 
 
@@ -298,7 +304,7 @@ class TestServiceErrorMapping:
     @pytest.mark.asyncio
     async def test_success_returns_parsed_brief(self, monkeypatch):
         messages = _install_fake(monkeypatch, result=_FakeResponse("end_turn", make_brief()))
-        brief = await service.generate_brief(_req(), UUID(TEST_USER_ID))
+        brief = await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
         assert brief.name == "Porto Gelo"
         call = messages.calls[0]
         assert call["model"] == service.settings.brief_model
@@ -309,7 +315,9 @@ class TestServiceErrorMapping:
     async def test_previous_is_renormalised_before_prompt(self, monkeypatch):
         messages = _install_fake(monkeypatch, result=_FakeResponse("end_turn", make_brief()))
         prev = make_brief(archetype="island", water_side="west")
-        await service.generate_brief(_req(previous=prev, refinement="bigger"), UUID(TEST_USER_ID))
+        await service.generate_brief(
+            _req(previous=prev, refinement="bigger"), UUID(TEST_USER_ID), None
+        )
         assert '"water_side": "all_around"' in messages.calls[0]["messages"][0]["content"]
 
     @pytest.mark.parametrize(
@@ -324,7 +332,7 @@ class TestServiceErrorMapping:
     async def test_stop_reasons(self, monkeypatch, stop, parsed, err):
         _install_fake(monkeypatch, result=_FakeResponse(stop, parsed))
         with pytest.raises(err):
-            await service.generate_brief(_req(), UUID(TEST_USER_ID))
+            await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
 
     @pytest.mark.asyncio
     async def test_parse_validation_error_maps_to_502_without_echo(
@@ -373,7 +381,7 @@ class TestServiceErrorMapping:
         for exc, expected in cases:
             _install_fake(monkeypatch, exc=exc)
             with pytest.raises(expected):
-                await service.generate_brief(_req(), UUID(TEST_USER_ID))
+                await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
 
 
 class TestLimits:
@@ -414,3 +422,36 @@ def test_corpus_has_no_raw_terrain_config_values():
     for path in _KNOWLEDGE_DIR.glob("*.md"):
         hits = forbidden.findall(path.read_text())
         assert not hits, f"{path.name} contains engine internals: {sorted(set(hits))}"
+
+
+# ── CITY-679: kill switch, cross-machine daily cap, max_tokens ─────────
+
+
+class TestKillSwitchAndGlobalCap:
+    @pytest.mark.asyncio
+    async def test_kill_switch_off_is_503_even_with_key(self, client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
+        monkeypatch.setattr(service.settings, "brief_enabled", False)
+        response = await client.post(
+            "/worlds/brief", json={"prompt": "an island town"}, headers={"X-User-Id": TEST_USER_ID}
+        )
+        assert response.status_code == 503
+
+    def test_kill_switch_defaults_off(self):
+        from city_api.config import Settings
+
+        assert Settings().brief_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_global_daily_cap_is_shared_counter(self, db_session, monkeypatch):
+        monkeypatch.setattr(service.settings, "brief_global_daily_limit", 2)
+        await service._check_global_daily_cap(db_session)
+        await service._check_global_daily_cap(db_session)
+        with pytest.raises(service.BriefRateLimitedError):
+            await service._check_global_daily_cap(db_session)
+
+    @pytest.mark.asyncio
+    async def test_uses_configured_max_tokens(self, monkeypatch):
+        messages = _install_fake(monkeypatch, result=_FakeResponse("end_turn", make_brief()))
+        await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
+        assert messages.calls[0]["max_tokens"] == service.settings.brief_max_tokens == 4096
