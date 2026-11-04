@@ -6,7 +6,11 @@ with water on one side, out-of-range sliders), so the API never stores an
 invalid world. Each repair is reported as a warning.
 """
 
-from city_api.brief.schema import WorldBrief
+from city_api.brief.schema import (
+    MAX_PREVIOUS_LIST_ITEMS,
+    MAX_PREVIOUS_STRING_CHARS,
+    WorldBrief,
+)
 from city_api.schemas.world import WorldSettings
 
 # Engine mask convention: angle 0 = east, 90 = south (screen +y is south).
@@ -76,9 +80,24 @@ def compile_brief(brief: WorldBrief) -> tuple[WorldBrief, WorldSettings, list[st
     s.block_size_meters = int(_clamp(s.block_size_meters, 50, 300))
     s.district_size_meters = int(_clamp(s.district_size_meters, 1000, 6000))
 
-    # ── Names ──
-    brief.name = brief.name.strip()[:100] or "Unnamed Harbor"
-    brief.name_suggestions = [n.strip()[:100] for n in brief.name_suggestions if n.strip()][:4]
+    # ── Names and prose ──
+    # Clamp to the BriefRequest.previous bounds so whatever we return can be
+    # sent back as `previous` on a refinement without a 422.
+    def _txt(value: str, limit: int = MAX_PREVIOUS_STRING_CHARS) -> str:
+        value = value.strip()
+        return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
+
+    # Per-field limits sized to the UI. The worst case serialises to about 2.5 KB,
+    # well under MAX_PREVIOUS_BRIEF_CHARS.
+    brief.name = _txt(brief.name, 60) or "Unnamed Harbor"
+    brief.name_suggestions = [_txt(n, 60) for n in brief.name_suggestions if n.strip()][:4]
+    brief.founding_story = _txt(brief.founding_story, MAX_PREVIOUS_STRING_CHARS)
+    brief.feels_like = [_txt(c, 60) for c in brief.feels_like if c.strip()][:3]
+    brief.unsupported = [_txt(u, 120) for u in brief.unsupported if u.strip()][
+        :MAX_PREVIOUS_LIST_ITEMS
+    ]
+    for key in ("water", "river", "ground", "streets"):
+        setattr(brief.legend, key, _txt(getattr(brief.legend, key), 120))
 
     water_deg = _COMPASS_DEG.get(brief.water_side)
     river_deg = (

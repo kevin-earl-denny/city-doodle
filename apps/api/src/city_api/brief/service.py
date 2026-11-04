@@ -10,6 +10,7 @@ from uuid import UUID
 import anthropic
 import pydantic
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from city_api.brief.compiler import compile_brief
@@ -35,6 +36,12 @@ class BriefUnavailableError(BriefError):
 class BriefRateLimitedError(BriefError):
     status = 429
     public_message = "Too many surveys at once. Give it a few seconds."
+
+
+class BriefDailyCapError(BriefError):
+    # 503, not 429: nothing a client can usefully retry until the UTC day rolls over.
+    status = 503
+    public_message = "The surveyors have clocked out for today. Try Draw it, or come back tomorrow."
 
 
 class BriefRefusedError(BriefError):
@@ -76,7 +83,8 @@ def _evict_idle(table: dict[UUID, deque[float]], now: float, span: float) -> Non
         del table[key]
 
 
-def _check_rate_limit(user_id: UUID) -> None:
+def _check_rate_limit(user_id: UUID, *, record: bool = True) -> None:
+    """Raise if any per-process window is full. Records the call when `record` is set."""
     now = time.monotonic()
     if len(_recent) > 1000:
         _evict_idle(_recent, now, 60)
@@ -96,8 +104,16 @@ def _check_rate_limit(user_id: UUID) -> None:
     if len(day) >= settings.brief_daily_limit_per_user:
         raise BriefRateLimitedError()
 
-    minute.append(now)
-    day.append(now)
+    if record:
+        minute.append(now)
+        day.append(now)
+        _global.append(now)
+
+
+def _record_call(user_id: UUID) -> None:
+    now = time.monotonic()
+    _recent.setdefault(user_id, deque()).append(now)
+    _daily.setdefault(user_id, deque()).append(now)
     _global.append(now)
 
 
@@ -116,17 +132,26 @@ async def _check_global_daily_cap(db: AsyncSession) -> None:
     Failed calls still cost tokens, so that's the safe direction.
     """
     today = datetime.now(UTC).date()
-    count = (await db.execute(_INCREMENT_SQL, {"day": today})).scalar_one()
-    await db.commit()
+    try:
+        count = (await db.execute(_INCREMENT_SQL, {"day": today})).scalar_one()
+        await db.commit()
+    except (SQLAlchemyError, OSError) as e:
+        # Fail closed: if we can't count, we don't spend.
+        logger.error("brief: usage counter unavailable: %s", type(e).__name__)
+        raise BriefUnavailableError() from e
     if count > settings.brief_global_daily_limit:
         logger.warning("brief: global daily cap reached (%s)", settings.brief_global_daily_limit)
-        raise BriefRateLimitedError()
+        raise BriefDailyCapError()
 
 
 async def generate_brief(request: BriefRequest, user_id: UUID, db: AsyncSession) -> WorldBrief:
     client = _get_client()
-    _check_rate_limit(user_id)
+    # Check the cheap per-process windows first, without recording. The shared
+    # counter is only incremented for calls that will really run, and per-user
+    # slots are only spent once the global cap has accepted the call.
+    _check_rate_limit(user_id, record=False)
     await _check_global_daily_cap(db)
+    _record_call(user_id)
 
     previous = request.previous
     if previous is not None:

@@ -285,7 +285,8 @@ def _install_fake(monkeypatch, *, result=None, exc=None) -> _FakeMessages:
     monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
     monkeypatch.setattr(service.settings, "brief_enabled", True)
     monkeypatch.setattr(service, "_client", fake)
-    monkeypatch.setattr(service, "_check_rate_limit", lambda user_id: None)
+    monkeypatch.setattr(service, "_check_rate_limit", lambda user_id, **kw: None)
+    monkeypatch.setattr(service, "_record_call", lambda user_id: None)
 
     async def _no_cap(db):
         return None
@@ -447,7 +448,7 @@ class TestKillSwitchAndGlobalCap:
         monkeypatch.setattr(service.settings, "brief_global_daily_limit", 2)
         await service._check_global_daily_cap(db_session)
         await service._check_global_daily_cap(db_session)
-        with pytest.raises(service.BriefRateLimitedError):
+        with pytest.raises(service.BriefDailyCapError):
             await service._check_global_daily_cap(db_session)
 
     @pytest.mark.asyncio
@@ -455,3 +456,87 @@ class TestKillSwitchAndGlobalCap:
         messages = _install_fake(monkeypatch, result=_FakeResponse("end_turn", make_brief()))
         await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
         assert messages.calls[0]["max_tokens"] == service.settings.brief_max_tokens == 4096
+
+
+# ── #487 review follow-ups ──────────────────────────────────────────────
+
+
+class TestReviewFollowups487:
+    @pytest.mark.asyncio
+    async def test_exhausted_daily_cap_is_503_with_clear_message(
+        self, client: AsyncClient, monkeypatch
+    ):
+        _install_fake(monkeypatch, result=_FakeResponse("end_turn", make_brief()))
+
+        async def capped(db):
+            raise service.BriefDailyCapError()
+
+        monkeypatch.setattr(service, "_check_global_daily_cap", capped)
+        response = await client.post(
+            "/worlds/brief", json={"prompt": "a port"}, headers={"X-User-Id": TEST_USER_ID}
+        )
+        assert response.status_code == 503
+        assert "tomorrow" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_daily_cap_rejection_does_not_consume_user_slots(self, monkeypatch):
+        monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
+        monkeypatch.setattr(service.settings, "brief_enabled", True)
+        monkeypatch.setattr(service, "_client", object())
+        user = UUID(int=4242)
+        service._recent.pop(user, None)
+        service._daily.pop(user, None)
+
+        async def capped(db):
+            raise service.BriefDailyCapError()
+
+        monkeypatch.setattr(service, "_check_global_daily_cap", capped)
+        with pytest.raises(service.BriefDailyCapError):
+            await service.generate_brief(_req(), user, None)
+        assert not service._recent.get(user)
+        assert not service._daily.get(user)
+
+    @pytest.mark.asyncio
+    async def test_counter_db_failure_fails_closed_503(self, monkeypatch):
+        from sqlalchemy.exc import OperationalError
+
+        class BrokenDB:
+            async def execute(self, *a, **k):
+                raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+        with pytest.raises(service.BriefUnavailableError):
+            await service._check_global_daily_cap(BrokenDB())
+
+    @pytest.mark.asyncio
+    async def test_json_decode_error_maps_to_502(self, monkeypatch):
+        import json as _json
+
+        _install_fake(monkeypatch, exc=_json.JSONDecodeError("bad", "{", 0))
+        with pytest.raises(service.BriefError) as info:
+            await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
+        assert info.value.status == 502
+
+    @pytest.mark.asyncio
+    async def test_unrelated_value_error_is_not_swallowed(self, monkeypatch):
+        _install_fake(monkeypatch, exc=ValueError("a programming bug"))
+        with pytest.raises(ValueError, match="programming bug"):
+            await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
+
+    def test_overlong_model_output_still_round_trips_as_previous(self):
+        """#498 review: whatever the API returns must be valid as `previous`."""
+        from city_api.brief.schema import BriefRequest
+
+        raw = make_brief(
+            founding_story="A very long story. " * 60,
+            unsupported=[f"Thing {i}: " + "x" * 300 for i in range(12)],
+            feels_like=["Lisbon " * 30] * 5,
+            legend={
+                "water": "w" * 900,
+                "river": "r" * 900,
+                "ground": "g" * 900,
+                "streets": "s" * 900,
+            },
+            name="N" * 200,
+        )
+        brief, _, _ = compile_brief(raw)
+        BriefRequest(prompt="a port", previous=brief, refinement="more hills")  # must not raise
