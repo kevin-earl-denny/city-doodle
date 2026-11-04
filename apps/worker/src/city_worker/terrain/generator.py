@@ -8,6 +8,7 @@ import numpy as np
 
 from city_worker.terrain.bays import BayConfig, extract_bays
 from city_worker.terrain.clip import clip_features_to_tile
+from city_worker.terrain.contours import extract_contours, pad_heightfield_for_contours
 from city_worker.terrain.geographic_masks import apply_geographic_mask
 from city_worker.terrain.noise import apply_erosion, generate_heightfield
 from city_worker.terrain.types import (
@@ -30,6 +31,9 @@ from city_worker.terrain.water import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Heights at which contour lines are drawn.
+CONTOUR_LEVELS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
 
 # Water level below which rivers and lakes are suppressed entirely.
 # This prevents stray water features on dry presets like "inland".
@@ -82,6 +86,24 @@ class TerrainGenerator:
                     tiles[(dx, dy)] = tile_data
 
         assert center_data is not None
+
+        # CITY-678: Contours run after all tiles exist, because each tile
+        # closes its sample grid with its right/bottom neighbours' first
+        # row/column so contour lines meet exactly at tile borders.
+        t_contours = time.perf_counter()
+        by_offset = {(0, 0): center_data, **tiles}
+        arrays = {k: np.asarray(t.heightfield, dtype=np.float64) for k, t in by_offset.items()}
+        for (dx, dy), tile_data in by_offset.items():
+            tile_data.features.extend(
+                self._generate_contours(
+                    tile_data,
+                    arrays[(dx, dy)],
+                    right=arrays.get((dx + 1, dy)),
+                    bottom=arrays.get((dx, dy + 1)),
+                    diagonal=arrays.get((dx + 1, dy + 1)),
+                )
+            )
+        phase_totals["contours"] = time.perf_counter() - t_contours
 
         total_features = sum(len(t.features) for t in [center_data, *tiles.values()])
         total_s = time.perf_counter() - t_start
@@ -327,16 +349,7 @@ class TerrainGenerator:
 
         t_beaches = time.perf_counter()
 
-        # Generate contour lines
-        contours = self._generate_contours(
-            heightfield=heightfield,
-            tx=tx,
-            ty=ty,
-            levels=[0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
-        )
-        features.extend(contours)
-
-        t_contours = time.perf_counter()
+        # Contours are added in generate_3x3 once neighbours exist (CITY-678)
 
         # Clip all features to tile boundaries (CITY-530)
         features = clip_features_to_tile(features, tx, ty, cfg.tile_size)
@@ -356,8 +369,7 @@ class TerrainGenerator:
             "deltas": t_deltas - t_rivers,
             "lakes": t_lakes - t_deltas,
             "beaches": t_beaches - t_lakes,
-            "contours": t_contours - t_beaches,
-            "clip": t_clip - t_contours,
+            "clip": t_clip - t_beaches,
         }
         total_s = t_clip - t0
         timing_parts = " ".join(f"{k}={v:.1f}s" for k, v in timings.items())
@@ -376,151 +388,29 @@ class TerrainGenerator:
 
     def _generate_contours(
         self,
+        tile_data: TileTerrainData,
         heightfield: np.ndarray,
-        tx: int,
-        ty: int,
-        levels: list[float],
+        right: np.ndarray | None,
+        bottom: np.ndarray | None,
+        diagonal: np.ndarray | None,
     ) -> list[TerrainFeature]:
-        """Generate contour lines at specified height levels.
+        """Generate connected contour polylines for one tile (CITY-678).
 
-        CITY-625: Vectorized marching squares.  The case index for every
-        cell is computed with numpy boolean operations in one pass, then
-        only cells with interesting cases (not 0 or 15) are processed.
-        Edge interpolation is also vectorized across all active cells at
-        once, eliminating the inner Python double-loop entirely.
+        Replaces the per-cell 2-point segments (capped at 100 per level)
+        with whole polylines per level, simplified to keep the payload small.
         """
         cfg = self.config
-        h, w = heightfield.shape
-        cell_size = cfg.tile_size / w
-        features = []
-
-        # CITY-514: Cap segments per level.
-        max_segments_per_level = 100
-
-        # Pre-compute corner value arrays (each shifted view of the grid)
-        v00 = heightfield[:-1, :-1]  # top-left
-        v10 = heightfield[1:, :-1]   # bottom-left
-        v01 = heightfield[:-1, 1:]   # top-right
-        v11 = heightfield[1:, 1:]    # bottom-right
-
-        # World-coordinate origins for each cell
-        js = np.arange(w - 1, dtype=np.float64)
-        is_ = np.arange(h - 1, dtype=np.float64)
-        x0_all = tx * cfg.tile_size + js[np.newaxis, :] * cell_size  # (1, w-1)
-        y0_all = ty * cfg.tile_size + is_[:, np.newaxis] * cell_size  # (h-1, 1)
-
-        # Marching-squares segment lookup.  Each case maps to a list of
-        # segment templates.  A segment template is a pair of edge
-        # identifiers: 0=top, 1=bottom, 2=left, 3=right.
-        _seg_table: dict[int, list[tuple[int, int]]] = {
-            1: [(2, 0)],          # left-top
-            2: [(0, 3)],          # top-right
-            3: [(2, 3)],          # left-right
-            4: [(3, 1)],          # right-bottom
-            5: [(2, 0), (3, 1)],  # left-top, right-bottom
-            6: [(0, 1)],          # top-bottom
-            7: [(2, 1)],          # left-bottom
-            8: [(1, 2)],          # bottom-left
-            9: [(0, 1)],          # top-bottom
-            10: [(0, 3), (1, 2)], # top-right, bottom-left
-            11: [(3, 1)],         # right-bottom
-            12: [(0, 3)],         # top-right
-            13: [(0, 3)],         # top-right
-            14: [(2, 0)],         # left-top
-        }
-
-        def _safe_lerp(va: np.ndarray, vb: np.ndarray, lev: float) -> np.ndarray:
-            """Vectorized linear interpolation for edge crossing."""
-            diff = vb - va
-            safe = np.where(np.abs(diff) < 1e-10, 1.0, diff)
-            return np.where(np.abs(diff) < 1e-10, 0.5, (lev - va) / safe)
-
-        for level in levels:
-            # Compute case index for all cells at once
-            case = np.zeros((h - 1, w - 1), dtype=np.int32)
-            case += (v00 >= level).astype(np.int32)
-            case += (v10 >= level).astype(np.int32) * 2
-            case += (v01 >= level).astype(np.int32) * 4
-            case += (v11 >= level).astype(np.int32) * 8
-
-            # Mask of cells with contour crossings (case not 0 or 15)
-            active = (case != 0) & (case != 15)
-            active_indices = np.argwhere(active)  # (N, 2) with [i, j]
-
-            if active_indices.size == 0:
-                continue
-
-            # Cap to max_segments_per_level cells (each cell produces
-            # at most 2 segments, but capping input cells is simpler and
-            # preserves the existing behaviour of taking the first N).
-            if len(active_indices) > max_segments_per_level:
-                active_indices = active_indices[:max_segments_per_level]
-
-            ai = active_indices[:, 0]
-            aj = active_indices[:, 1]
-
-            # Extract corner values for active cells
-            av00 = v00[ai, aj]
-            av10 = v10[ai, aj]
-            av01 = v01[ai, aj]
-            av11 = v11[ai, aj]
-            ax0 = x0_all[0, aj]
-            ay0 = y0_all[ai, 0]
-
-            # Compute all four edge crossing points (vectorized)
-            t_top = _safe_lerp(av00, av01, level)       # top edge
-            t_bottom = _safe_lerp(av10, av11, level)     # bottom edge
-            t_left = _safe_lerp(av00, av10, level)       # left edge
-            t_right = _safe_lerp(av01, av11, level)      # right edge
-
-            # Edge point coordinates: (x, y) for each of the 4 edges
-            # 0=top, 1=bottom, 2=left, 3=right
-            edge_x = np.stack([
-                ax0 + t_top * cell_size,                 # top
-                ax0 + t_bottom * cell_size,              # bottom
-                ax0 + np.zeros_like(t_left),             # left (x = x0)
-                ax0 + np.full_like(t_right, cell_size),  # right (x = x0 + cell_size)
-            ])  # (4, N)
-            edge_y = np.stack([
-                ay0 + np.zeros_like(t_top),              # top (y = y0)
-                ay0 + np.full_like(t_bottom, cell_size), # bottom (y = y0 + cell_size)
-                ay0 + t_left * cell_size,                # left
-                ay0 + t_right * cell_size,               # right
-            ])  # (4, N)
-
-            # Emit segments
-            cases = case[ai, aj]
-            contour_segments: list[list[tuple[float, float]]] = []
-
-            for k in range(len(ai)):
-                c = int(cases[k])
-                seg_templates = _seg_table.get(c)
-                if seg_templates is None:
-                    continue
-                for e1, e2 in seg_templates:
-                    seg = [
-                        (float(edge_x[e1, k]), float(edge_y[e1, k])),
-                        (float(edge_x[e2, k]), float(edge_y[e2, k])),
-                    ]
-                    contour_segments.append(seg)
-                    if len(contour_segments) >= max_segments_per_level:
-                        break
-                if len(contour_segments) >= max_segments_per_level:
-                    break
-
-            for seg in contour_segments[:max_segments_per_level]:
-                features.append(
-                    TerrainFeature(
-                        type="contour",
-                        geometry={
-                            "type": "LineString",
-                            "coordinates": seg,
-                        },
-                        properties={"elevation": level},
-                    )
-                )
-
-        return features
+        cell_size = cfg.tile_size / heightfield.shape[1]
+        grid = pad_heightfield_for_contours(heightfield, right, bottom, diagonal)
+        return extract_contours(
+            grid,
+            x0=tile_data.tx * cfg.tile_size,
+            y0=tile_data.ty * cfg.tile_size,
+            cell_size=cell_size,
+            levels=CONTOUR_LEVELS,
+            simplify_tolerance=cell_size * 0.5,
+            min_loop_length=cell_size * 4,
+        )
 
 
 def generate_terrain_3x3(
