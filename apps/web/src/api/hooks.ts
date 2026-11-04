@@ -12,7 +12,6 @@ import {
 } from "@tanstack/react-query";
 import { api } from "./client";
 import {
-  AuthResponse,
   City,
   CityCreate,
   CityLimitsCreate,
@@ -67,8 +66,6 @@ import {
   TransitStationBulkCreate,
   TransitStationCreate,
   TransitStationUpdate,
-  UserCreate,
-  UserLogin,
   UserResponse,
   World,
   WorldCreate,
@@ -157,44 +154,6 @@ export function useCurrentUser(
   return useQuery({
     queryKey: queryKeys.me,
     queryFn: () => api.auth.me(),
-    ...options,
-  });
-}
-
-export function useRegister(
-  options?: UseMutationOptions<AuthResponse, Error, UserCreate>
-) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: UserCreate) => api.auth.register(data),
-    onSuccess: (data) => {
-      queryClient.setQueryData(queryKeys.me, data.user);
-    },
-    ...options,
-  });
-}
-
-export function useLogin(
-  options?: UseMutationOptions<AuthResponse, Error, UserLogin>
-) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: UserLogin) => api.auth.login(data),
-    onSuccess: (data) => {
-      queryClient.setQueryData(queryKeys.me, data.user);
-    },
-    ...options,
-  });
-}
-
-export function useLogout(options?: UseMutationOptions<void, Error, void>) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.auth.logout(),
-    onSuccess: () => {
-      queryClient.removeQueries({ queryKey: queryKeys.me });
-      queryClient.removeQueries({ queryKey: queryKeys.worlds });
-    },
     ...options,
   });
 }

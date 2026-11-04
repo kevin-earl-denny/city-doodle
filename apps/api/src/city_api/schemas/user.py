@@ -1,4 +1,4 @@
-"""User and auth schemas."""
+"""User schemas."""
 
 from datetime import datetime
 from uuid import UUID
@@ -12,18 +12,6 @@ class UserBase(BaseModel):
     email: EmailStr
 
 
-class UserCreate(UserBase):
-    """User registration request."""
-
-    password: str
-
-
-class UserLogin(UserBase):
-    """User login request."""
-
-    password: str
-
-
 class UserResponse(UserBase):
     """User response schema."""
 
@@ -32,17 +20,3 @@ class UserResponse(UserBase):
 
     class Config:
         from_attributes = True
-
-
-class SessionResponse(BaseModel):
-    """Session response schema."""
-
-    token: str
-    expires_at: datetime
-
-
-class AuthResponse(BaseModel):
-    """Authentication response with user and session."""
-
-    user: UserResponse
-    session: SessionResponse

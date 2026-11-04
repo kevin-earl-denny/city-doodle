@@ -5,7 +5,6 @@
 
 import {
   ApiClientError,
-  AuthResponse,
   City,
   CityCreate,
   CityLimitsCreate,
@@ -59,8 +58,6 @@ import {
   TransitStationBulkCreate,
   TransitStationCreate,
   TransitStationUpdate,
-  UserCreate,
-  UserLogin,
   UserResponse,
   World,
   WorldCreate,
@@ -77,27 +74,41 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 // Token Management
 // ============================================================================
 
-let authToken: string | null = null;
+/**
+ * Returns a Clerk session token (or null when signed out). Injected by
+ * AuthProvider from Clerk's `useAuth().getToken`; Clerk caches and refreshes
+ * the short-lived token, so call it before every request.
+ */
+export type TokenGetter = (options?: { skipCache?: boolean }) => Promise<string | null>;
 
-export function setAuthToken(token: string | null): void {
-  authToken = token;
-  if (token) {
-    localStorage.setItem("auth_token", token);
-  } else {
-    localStorage.removeItem("auth_token");
+let tokenGetter: TokenGetter | null = null;
+let lastAuthToken: string | null = null;
+
+/** Called by AuthProvider (inside ClerkProvider); pass null on unmount/sign-out. */
+export function setTokenGetter(getter: TokenGetter | null): void {
+  tokenGetter = getter;
+  if (!getter) {
+    lastAuthToken = null;
   }
 }
 
-export function getAuthToken(): string | null {
-  if (!authToken) {
-    authToken = localStorage.getItem("auth_token");
+/** Fetch a Clerk session token, or null if no getter is installed / signed out. */
+export async function getAuthToken(skipCache = false): Promise<string | null> {
+  if (!tokenGetter) {
+    return null;
   }
-  return authToken;
+  const token = await tokenGetter(skipCache ? { skipCache: true } : undefined);
+  lastAuthToken = token;
+  return token;
 }
 
-export function clearAuthToken(): void {
-  authToken = null;
-  localStorage.removeItem("auth_token");
+/**
+ * The most recent token handed out by getAuthToken, for synchronous
+ * best-effort callers (e.g. a keepalive fetch in `beforeunload`, which cannot
+ * await). May be expired; never use it for normal requests.
+ */
+export function getLastAuthToken(): string | null {
+  return lastAuthToken;
 }
 
 // ============================================================================
@@ -125,22 +136,30 @@ async function request<T>(
     });
   }
 
-  // Build headers
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+  const send = async (skipTokenCache: boolean): Promise<Response> => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (requireAuth) {
+      const token = await getAuthToken(skipTokenCache);
+      if (!token) {
+        // Never send an authenticated request without credentials.
+        throw new ApiClientError("Not signed in", 401);
+      }
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    return fetch(url.toString(), {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
   };
 
-  const token = getAuthToken();
-  if (requireAuth && token) {
-    headers["Authorization"] = `Bearer ${token}`;
+  let response = await send(false);
+  // A 401 may just be a stale cached session token: retry once with a fresh one.
+  if (requireAuth && response.status === 401) {
+    response = await send(true);
   }
-
-  // Make request
-  const response = await fetch(url.toString(), {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
 
   // Handle errors
   if (!response.ok) {
@@ -176,32 +195,7 @@ async function request<T>(
 // ============================================================================
 
 export const auth = {
-  /** Register a new user */
-  async register(data: UserCreate): Promise<AuthResponse> {
-    const result = await request<AuthResponse>("POST", "/auth/register", {
-      body: data,
-      requireAuth: false,
-    });
-    setAuthToken(result.session.token);
-    return result;
-  },
-
-  /** Login with email and password */
-  async login(data: UserLogin): Promise<AuthResponse> {
-    const result = await request<AuthResponse>("POST", "/auth/login", {
-      body: data,
-      requireAuth: false,
-    });
-    setAuthToken(result.session.token);
-    return result;
-  },
-
-  /** Logout and clear session */
-  async logout(): Promise<void> {
-    await request<void>("POST", "/auth/logout");
-    clearAuthToken();
-  },
-
+  // Sign-up / sign-in / sign-out are handled by Clerk (CITY-644).
   /** Get current user info */
   async me(): Promise<UserResponse> {
     return request<UserResponse>("GET", "/auth/me");

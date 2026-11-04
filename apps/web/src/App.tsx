@@ -4,12 +4,12 @@ import { ProtectedRoute } from './components/ProtectedRoute'
 import { CityLoader } from './components/ui'
 
 // Route-level code splitting: each page is loaded on demand so that
-// login/register never pull in PixiJS, MapCanvas, or EditorShell.
-const LoginPage = lazy(() =>
-  import('./pages/LoginPage').then((m) => ({ default: m.LoginPage }))
+// sign-in/sign-up never pull in PixiJS, MapCanvas, or EditorShell.
+const SignInPage = lazy(() =>
+  import('./pages/SignInPage').then((m) => ({ default: m.SignInPage }))
 )
-const RegisterPage = lazy(() =>
-  import('./pages/RegisterPage').then((m) => ({ default: m.RegisterPage }))
+const SignUpPage = lazy(() =>
+  import('./pages/SignUpPage').then((m) => ({ default: m.SignUpPage }))
 )
 const WorldsPage = lazy(() =>
   import('./pages/WorldsPage').then((m) => ({ default: m.WorldsPage }))
@@ -46,8 +46,12 @@ export function App() {
             </ProtectedRoute>
           }
         />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
+        {/* Clerk renders multi-step flows (verification, SSO callbacks) under these paths. */}
+        <Route path="/sign-in/*" element={<SignInPage />} />
+        <Route path="/sign-up/*" element={<SignUpPage />} />
+        {/* Pre-Clerk URLs (CITY-644) */}
+        <Route path="/login" element={<Navigate to="/sign-in" replace />} />
+        <Route path="/register" element={<Navigate to="/sign-up" replace />} />
         <Route path="/worlds" element={<Navigate to="/" replace />} />
         <Route
           path="/worlds/:worldId"

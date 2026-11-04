@@ -15,6 +15,7 @@ import {
   useHeartbeatLock,
 } from "../../api/hooks";
 import { ApiClientError } from "../../api/types";
+import { getLastAuthToken } from "../../api/client";
 
 interface LockConflict {
   lockedBy: string;
@@ -175,7 +176,9 @@ export function EditLockProvider({ children, worldId }: EditLockProviderProps) {
       const url = `${
         import.meta.env.VITE_API_URL || "http://localhost:8000"
       }/tiles/${tileId}/lock`;
-      const token = localStorage.getItem("auth_token");
+      // beforeunload can't await Clerk's getToken; use the last token the API
+      // client fetched (best-effort — the lock also expires on its own).
+      const token = getLastAuthToken();
 
       try {
         fetch(url, {

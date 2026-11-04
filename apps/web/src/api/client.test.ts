@@ -1,39 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import {
-  api,
-  setAuthToken,
-  getAuthToken,
-  clearAuthToken,
-} from "./client";
+import { api, setTokenGetter, getAuthToken, getLastAuthToken } from "./client";
 import { ApiClientError } from "./types";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-// Mock localStorage
-const localStorageMock = (() => {
-  let store: Record<string, string> = {};
-  return {
-    getItem: (key: string) => store[key] || null,
-    setItem: (key: string, value: string) => {
-      store[key] = value;
-    },
-    removeItem: (key: string) => {
-      delete store[key];
-    },
-    clear: () => {
-      store = {};
-    },
-  };
-})();
-vi.stubGlobal("localStorage", localStorageMock);
+/** Install a Clerk-like token getter that always returns `token`. */
+function useToken(token: string | null) {
+  const getter = vi.fn(async () => token);
+  setTokenGetter(getter);
+  return getter;
+}
 
 describe("API Client", () => {
   beforeEach(() => {
     mockFetch.mockReset();
-    localStorageMock.clear();
-    clearAuthToken();
+    setTokenGetter(null);
   });
 
   afterEach(() => {
@@ -41,99 +24,34 @@ describe("API Client", () => {
   });
 
   describe("Token Management", () => {
-    it("stores token in localStorage", () => {
-      setAuthToken("test-token");
-      expect(localStorage.getItem("auth_token")).toBe("test-token");
+    it("returns null when no token getter is installed", async () => {
+      expect(await getAuthToken()).toBeNull();
     });
 
-    it("retrieves token from memory", () => {
-      setAuthToken("test-token");
-      expect(getAuthToken()).toBe("test-token");
+    it("asks the Clerk token getter for a token", async () => {
+      const getter = useToken("clerk-jwt");
+      expect(await getAuthToken()).toBe("clerk-jwt");
+      expect(getter).toHaveBeenCalledWith(undefined);
     });
 
-    it("retrieves token from localStorage if not in memory", () => {
-      localStorage.setItem("auth_token", "stored-token");
-      // Clear in-memory token first, then call getAuthToken which reads from localStorage
-      clearAuthToken();
-      localStorage.setItem("auth_token", "stored-token");
-      expect(getAuthToken()).toBe("stored-token");
+    it("passes skipCache through to the getter", async () => {
+      const getter = useToken("fresh-jwt");
+      await getAuthToken(true);
+      expect(getter).toHaveBeenCalledWith({ skipCache: true });
     });
 
-    it("clears token from both memory and localStorage", () => {
-      setAuthToken("test-token");
-      clearAuthToken();
-      expect(getAuthToken()).toBeNull();
-      expect(localStorage.getItem("auth_token")).toBeNull();
+    it("remembers the last token for synchronous callers and forgets it on reset", async () => {
+      useToken("clerk-jwt");
+      await getAuthToken();
+      expect(getLastAuthToken()).toBe("clerk-jwt");
+      setTokenGetter(null);
+      expect(getLastAuthToken()).toBeNull();
     });
   });
 
   describe("Auth Endpoints", () => {
-    it("registers a new user and sets token", async () => {
-      const mockResponse = {
-        user: { id: "1", email: "test@example.com", created_at: "2024-01-01" },
-        session: { token: "new-token", expires_at: "2024-02-01" },
-      };
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(mockResponse),
-      });
-
-      const result = await api.auth.register({
-        email: "test@example.com",
-        password: "password123",
-      });
-
-      expect(result).toEqual(mockResponse);
-      expect(getAuthToken()).toBe("new-token");
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining("/auth/register"),
-        expect.objectContaining({
-          method: "POST",
-          body: JSON.stringify({
-            email: "test@example.com",
-            password: "password123",
-          }),
-        })
-      );
-    });
-
-    it("logs in and sets token", async () => {
-      const mockResponse = {
-        user: { id: "1", email: "test@example.com", created_at: "2024-01-01" },
-        session: { token: "login-token", expires_at: "2024-02-01" },
-      };
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(mockResponse),
-      });
-
-      const result = await api.auth.login({
-        email: "test@example.com",
-        password: "password123",
-      });
-
-      expect(result).toEqual(mockResponse);
-      expect(getAuthToken()).toBe("login-token");
-    });
-
-    it("logs out and clears token", async () => {
-      setAuthToken("existing-token");
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 204,
-        json: () => Promise.resolve(undefined),
-      });
-
-      await api.auth.logout();
-
-      expect(getAuthToken()).toBeNull();
-    });
-
-    it("gets current user info", async () => {
-      setAuthToken("valid-token");
+    it("gets current user info with the Clerk token as Bearer", async () => {
+      useToken("valid-token");
       const mockUser = {
         id: "1",
         email: "test@example.com",
@@ -157,11 +75,54 @@ describe("API Client", () => {
         })
       );
     });
+
+    it("fetches a token for every request", async () => {
+      const getter = useToken("t");
+      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve([]) });
+
+      await api.worlds.list();
+      await api.worlds.list();
+
+      expect(getter).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not send authenticated requests when signed out", async () => {
+      useToken(null);
+
+      await expect(api.auth.me()).rejects.toMatchObject({
+        name: "ApiClientError",
+        status: 401,
+      });
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("retries a 401 once with a fresh (uncached) token", async () => {
+      const getter = vi.fn(async (options?: { skipCache?: boolean }) =>
+        options?.skipCache ? "fresh-token" : "stale-token"
+      );
+      setTokenGetter(getter);
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 401,
+          statusText: "Unauthorized",
+          json: () => Promise.resolve({ detail: "Invalid or expired token" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ id: "1", email: "a@b.c", created_at: "x" }),
+        });
+
+      await api.auth.me();
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch.mock.calls[1][1].headers.Authorization).toBe("Bearer fresh-token");
+    });
   });
 
   describe("World Endpoints", () => {
     beforeEach(() => {
-      setAuthToken("test-token");
+      useToken("test-token");
     });
 
     it("creates a world", async () => {
@@ -247,7 +208,7 @@ describe("API Client", () => {
 
   describe("Error Handling", () => {
     beforeEach(() => {
-      setAuthToken("test-token");
+      useToken("test-token");
     });
 
     it("throws ApiClientError on 4xx errors", async () => {
@@ -263,20 +224,18 @@ describe("API Client", () => {
       );
     });
 
-    it("includes status code in error", async () => {
-      mockFetch.mockResolvedValueOnce({
+    it("includes status code in error (401 persists after the fresh-token retry)", async () => {
+      mockFetch.mockResolvedValue({
         ok: false,
         status: 401,
         statusText: "Unauthorized",
         json: () => Promise.resolve({ detail: "Invalid token" }),
       });
 
-      try {
-        await api.auth.me();
-      } catch (error) {
-        expect(error).toBeInstanceOf(ApiClientError);
-        expect((error as ApiClientError).status).toBe(401);
-      }
+      const error = await api.auth.me().catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ApiClientError);
+      expect((error as ApiClientError).status).toBe(401);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it("handles network errors", async () => {
@@ -288,7 +247,7 @@ describe("API Client", () => {
 
   describe("Job Endpoints", () => {
     beforeEach(() => {
-      setAuthToken("test-token");
+      useToken("test-token");
     });
 
     it("creates a job", async () => {
@@ -334,7 +293,7 @@ describe("API Client", () => {
 
   describe("Transit Endpoints", () => {
     beforeEach(() => {
-      setAuthToken("test-token");
+      useToken("test-token");
     });
 
     describe("Network Operations", () => {

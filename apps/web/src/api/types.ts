@@ -17,30 +17,10 @@ export type DateTime = string;
 // User & Auth Types
 // ============================================================================
 
-export interface UserCreate {
-  email: string;
-  password: string;
-}
-
-export interface UserLogin {
-  email: string;
-  password: string;
-}
-
 export interface UserResponse {
   id: UUID;
   email: string;
   created_at: DateTime;
-}
-
-export interface SessionResponse {
-  token: string;
-  expires_at: DateTime;
-}
-
-export interface AuthResponse {
-  user: UserResponse;
-  session: SessionResponse;
 }
 
 // ============================================================================
