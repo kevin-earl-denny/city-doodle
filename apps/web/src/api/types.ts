@@ -91,6 +91,12 @@ export interface WorldSettings {
   beach_enabled: boolean;
   /** Multiplier for beach width (0.5 = narrow, 2.0 = wide) */
   beach_width_multiplier: number;
+  /** Compass bearing of the main water body from the city centre, in degrees (CITY-659) */
+  water_direction_deg?: number | null;
+  /** Bearing of the main river's axis, in degrees (CITY-659) */
+  river_axis_deg?: number | null;
+  /** Terrain relief class (CITY-659) */
+  relief?: Relief | null;
 }
 
 /** Default world settings */
@@ -151,6 +157,79 @@ export interface WorldCreate {
   name: string;
   seed?: number;
   settings?: Partial<WorldSettings>;
+}
+
+// ============================================================================
+// World Brief ("Describe it", CITY-659 / CITY-660)
+// ============================================================================
+
+export type Relief = "flat" | "rolling" | "hilly" | "mountainous";
+
+export type WaterSide =
+  | "north"
+  | "north_east"
+  | "east"
+  | "south_east"
+  | "south"
+  | "south_west"
+  | "west"
+  | "north_west"
+  | "all_around"
+  | "none";
+
+export type RiverCourse = "none" | "straight" | "meandering" | "braided";
+
+export type RiverAxis = "north_south" | "east_west" | "northeast_southwest" | "northwest_southeast";
+
+export type CoastStyle = "smooth" | "varied" | "rugged" | "none";
+
+export type GrowthStoryId =
+  | "medieval_tangle"
+  | "boomtown_grid"
+  | "grand_boulevards"
+  | "hill_town"
+  | "streetcar_suburb"
+  | "motor_sprawl";
+
+/** Structured reading of a terrain description, returned by POST /worlds/brief. */
+export interface WorldBrief {
+  archetype: GeographicSetting;
+  water_side: WaterSide;
+  river: { count: number; course: RiverCourse; axis: RiverAxis | null };
+  relief: Relief;
+  coast: CoastStyle;
+  growth_story: GrowthStoryId;
+  sliders: {
+    grid_organic: number;
+    sprawl_compact: number;
+    transit_car: number;
+    historic_modern: number;
+    block_size_meters: number;
+    district_size_meters: number;
+  };
+  name: string;
+  name_suggestions: string[];
+  founding_year: number | null;
+  founding_story: string;
+  feels_like: string[];
+  legend: { water: string; river: string; ground: string; streets: string };
+  unsupported: string[];
+}
+
+export interface WorldBriefRequest {
+  /** The player's description, 3–600 chars. Re-sent with every refinement. */
+  prompt: string;
+  /** The brief being refined; requires `refinement`. */
+  previous?: WorldBrief;
+  /** Follow-up change, up to 300 chars. */
+  refinement?: string;
+}
+
+export interface WorldBriefResponse {
+  brief: WorldBrief;
+  /** Compiled settings, ready to pass to POST /worlds unchanged. */
+  settings: WorldSettings;
+  warnings: string[];
 }
 
 export interface WorldUpdate {

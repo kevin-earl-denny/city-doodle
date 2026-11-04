@@ -629,10 +629,52 @@ interface LandPlateArtProps {
   story?: GrowthStoryId | null;
   /** City name; plate labels are named after it ("Gull Harbor" -> "Gull Bay"). */
   placeName: string;
+  /** Pencilled Caveat notes: `streets` points at the old town, `ground` sits bottom-left. */
+  annotations?: { ground?: string; streets?: string };
+}
+
+/** Handwritten pencil note with a parchment halo so it reads over linework. */
+function PencilNote({ x, y, anchor, children }: { x: number; y: number; anchor: "start" | "end"; children: string }) {
+  return (
+    <text
+      x={x}
+      y={y}
+      textAnchor={anchor}
+      fill={C.ink}
+      stroke={C.parchment}
+      strokeWidth={5}
+      strokeLinejoin="round"
+      paintOrder="stroke"
+      style={{ fontFamily: "var(--font-hand)" }}
+      fontSize={19}
+      fontWeight={700}
+    >
+      {children}
+    </text>
+  );
+}
+
+/**
+ * Note pointing at the old town. It sits above the core when there's room
+ * (water labels tend to sit level with or below it), on whichever side has
+ * more space, with the arrow aimed back at the core.
+ */
+function StreetsNote({ core: [cx, cy], text }: { core: [number, number]; text: string }) {
+  const above = cy > 100;
+  const y = above ? cy - 22 : cy + 26;
+  return cx <= PLATE_WIDTH / 2 ? (
+    <PencilNote x={cx + 20} y={y} anchor="start">
+      {`${above ? "↙" : "↖"} ${text}`}
+    </PencilNote>
+  ) : (
+    <PencilNote x={cx - 20} y={y} anchor="end">
+      {`${text} ${above ? "↘" : "↗"}`}
+    </PencilNote>
+  );
 }
 
 /** Content for <Plate>: land on graph paper, place labels, optional streets. */
-export function LandPlateArt({ land, story, placeName }: LandPlateArtProps) {
+export function LandPlateArt({ land, story, placeName, annotations }: LandPlateArtProps) {
   const uid = useId().replace(/:/g, "");
   const gridId = `plate-grid-${uid}`;
   const landId = `plate-land-${uid}`;
@@ -680,6 +722,12 @@ export function LandPlateArt({ land, story, placeName }: LandPlateArtProps) {
           {label.text(stem)}
         </text>
       ))}
+      {annotations?.streets && <StreetsNote core={plate.core} text={annotations.streets} />}
+      {annotations?.ground && (
+        <PencilNote x={24} y={PLATE_HEIGHT - 18} anchor="start">
+          {`${annotations.ground} ↗`}
+        </PencilNote>
+      )}
     </>
   );
 }

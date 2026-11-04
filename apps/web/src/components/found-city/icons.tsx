@@ -87,3 +87,30 @@ export function CopyIcon() {
     </svg>
   );
 }
+
+/** Two opposing arrows: "swap this value". */
+export function SwapIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" className="shrink-0">
+      <path d="M3 6 H13 L10 3 M13 10 H3 L6 13" fill="none" stroke="var(--color-pencil)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function ArrowUpIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      <path d="M7 12 V2 M2.5 6.5 L7 2 L11.5 6.5" fill="none" stroke={C.paper} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** The large pencil on the empty plate. */
+export function BigPencilIcon({ className }: { className?: string }) {
+  return (
+    <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true" className={className}>
+      <path d="M6 34 L28 12 L32 16 L10 38 L6 38 Z" fill={C.paper} stroke={C.ink} strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M30 10 L33 7 L37 11 L34 14" fill="none" stroke={C.ink} strokeWidth="1.8" strokeLinejoin="round" />
+    </svg>
+  );
+}

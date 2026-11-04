@@ -71,6 +71,8 @@ import {
   UserLogin,
   UserResponse,
   World,
+  WorldBriefRequest,
+  WorldBriefResponse,
   WorldCreate,
   WorldUpdate,
 } from "./types";
@@ -221,6 +223,19 @@ export function useWorld(
     queryKey: queryKeys.world(worldId),
     queryFn: () => api.worlds.get(worldId),
     enabled: !!worldId,
+    ...options,
+  });
+}
+
+/**
+ * Read a terrain description into a world brief (CITY-660 "Describe it").
+ * Not cached: every call is a fresh model request.
+ */
+export function useWorldBrief(
+  options?: UseMutationOptions<WorldBriefResponse, Error, WorldBriefRequest>
+) {
+  return useMutation({
+    mutationFn: (data: WorldBriefRequest) => api.worlds.brief(data),
     ...options,
   });
 }

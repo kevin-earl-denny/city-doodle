@@ -7,19 +7,11 @@
  * own route steps, body and footer with the pieces in FlowLayout.tsx.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ComponentType,
-  type KeyboardEvent,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useCreateWorld } from "../../api";
 import type { WorldSettings } from "../../api/types";
-import { DrawItFlow } from "./DrawItFlow";
+import { DescribeItFlow } from "./DescribeItFlow";
+import { DrawItFlow, type DrawItInitial } from "./DrawItFlow";
 import { FOCUS_RING } from "./FlowLayout";
 import { CloseIcon, PencilIcon, SparkleIcon } from "./icons";
 
@@ -38,6 +30,8 @@ export interface FoundCityModeProps {
   /** Ids linking the mode's panel to its tab. */
   panelId: string;
   tabId: string;
+  /** Switch to Draw it, optionally restarting it prefilled. */
+  onSwitchToDraw: (initial?: DrawItInitial) => void;
 }
 
 type ModeId = "draw" | "describe";
@@ -46,8 +40,6 @@ interface ModeDef {
   id: ModeId;
   label: string;
   icon: (active: boolean) => ReactNode;
-  /** Undefined while the mode is not built yet: the tab shows "Coming soon". */
-  component?: ComponentType<FoundCityModeProps>;
 }
 
 const MODES: ModeDef[] = [
@@ -55,7 +47,6 @@ const MODES: ModeDef[] = [
     id: "draw",
     label: "Draw it",
     icon: (active) => <PencilIcon color={active ? "var(--color-paper)" : "var(--color-ink)"} />,
-    component: DrawItFlow,
   },
   {
     id: "describe",
@@ -99,6 +90,7 @@ export function FoundCityModal({ onClose, onCreated }: FoundCityModalProps) {
   const [mode, setMode] = useState<ModeId>("draw");
   const [seedText, setSeedText] = useState(() => String(randomSeed()));
   const [foundError, setFoundError] = useState<string | null>(null);
+  const [drawRun, setDrawRun] = useState<{ key: number; initial?: DrawItInitial }>({ key: 0 });
   const createWorld = useCreateWorld();
   const isFounding = createWorld.isPending;
 
@@ -181,6 +173,7 @@ export function FoundCityModal({ onClose, onCreated }: FoundCityModalProps) {
     const index = tabRefs.current.findIndex((el) => el === document.activeElement);
     const next = (index + (e.key === "ArrowRight" ? 1 : -1) + MODES.length) % MODES.length;
     tabRefs.current[next]?.focus();
+    switchMode(MODES[next].id);
   };
 
   const handleFound = async (name: string, settings: Partial<WorldSettings>) => {
@@ -201,10 +194,32 @@ export function FoundCityModal({ onClose, onCreated }: FoundCityModalProps) {
     }
   };
 
-  const active = MODES.find((m) => m.id === mode) ?? MODES[0];
-  const Mode = active.component;
+  const switchMode = (next: ModeId) => {
+    if (next === mode || isFounding) return;
+    setFoundError(null);
+    setMode(next);
+  };
+
+  const switchToDraw = (initial?: DrawItInitial) => {
+    // A prefill restarts Draw it from the brief; otherwise keep whatever was there.
+    if (initial) setDrawRun((run) => ({ key: run.key + 1, initial }));
+    switchMode("draw");
+  };
+
   const tabId = (id: ModeId) => `${baseId}-tab-${id}`;
-  const panelId = `${baseId}-panel`;
+  const panelId = (id: ModeId) => `${baseId}-panel-${id}`;
+  const modeProps = (id: ModeId): FoundCityModeProps => ({
+    seedText,
+    onSeedChange: setSeedText,
+    seedError: seedProblem(seedText),
+    onClose: close,
+    onFound: handleFound,
+    isFounding,
+    foundError,
+    panelId: panelId(id),
+    tabId: tabId(id),
+    onSwitchToDraw: switchToDraw,
+  });
 
   return (
     <div
@@ -234,40 +249,27 @@ export function FoundCityModal({ onClose, onCreated }: FoundCityModalProps) {
           <div role="tablist" aria-label="How to found it" className="flex gap-1 rounded-full bg-parchment-dim p-1" onKeyDown={handleTabKeyDown}>
             {MODES.map((m, i) => {
               const selected = m.id === mode;
-              const available = Boolean(m.component);
-              const tipId = `${baseId}-tip-${m.id}`;
               return (
-                <div key={m.id} className="group relative">
-                  <button
-                    ref={(el) => {
-                      tabRefs.current[i] = el;
-                    }}
-                    id={tabId(m.id)}
-                    type="button"
-                    role="tab"
-                    aria-selected={selected}
-                    aria-controls={selected ? panelId : undefined}
-                    aria-disabled={available ? undefined : true}
-                    aria-describedby={available ? undefined : tipId}
-                    tabIndex={selected ? 0 : -1}
-                    onClick={() => available && setMode(m.id)}
-                    className={`flex items-center gap-2 rounded-full px-[18px] py-2 font-ui text-[14px] leading-[18px] font-semibold ${FOCUS_RING} ${
-                      selected ? "bg-ink text-paper" : "bg-transparent text-ink"
-                    } ${available ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}
-                  >
-                    {m.icon(selected)}
-                    {m.label}
-                  </button>
-                  {!available && (
-                    <span
-                      id={tipId}
-                      role="tooltip"
-                      className="pointer-events-none absolute top-full left-1/2 z-20 mt-2 -translate-x-1/2 rotate-[-2deg] rounded-[4px] bg-ink px-2.5 py-0.5 font-hand text-[18px] leading-6 font-semibold whitespace-nowrap text-paper opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100 motion-reduce:transition-none"
-                    >
-                      Coming soon
-                    </span>
-                  )}
-                </div>
+                <button
+                  key={m.id}
+                  ref={(el) => {
+                    tabRefs.current[i] = el;
+                  }}
+                  id={tabId(m.id)}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  aria-controls={panelId(m.id)}
+                  tabIndex={selected ? 0 : -1}
+                  disabled={isFounding && !selected}
+                  onClick={() => switchMode(m.id)}
+                  className={`flex cursor-pointer items-center gap-2 rounded-full px-[18px] py-2 font-ui text-[14px] leading-[18px] font-semibold disabled:cursor-wait ${FOCUS_RING} ${
+                    selected ? "bg-ink text-paper" : "bg-transparent text-ink hover:bg-paper"
+                  }`}
+                >
+                  {m.icon(selected)}
+                  {m.label}
+                </button>
               );
             })}
           </div>
@@ -285,19 +287,13 @@ export function FoundCityModal({ onClose, onCreated }: FoundCityModalProps) {
           </div>
         </header>
 
-        {Mode && (
-          <Mode
-            seedText={seedText}
-            onSeedChange={setSeedText}
-            seedError={seedProblem(seedText)}
-            onClose={close}
-            onFound={handleFound}
-            isFounding={isFounding}
-            foundError={foundError}
-            panelId={panelId}
-            tabId={tabId(mode)}
-          />
-        )}
+        {/* Both modes stay mounted so switching tabs keeps each one's progress. */}
+        <div hidden={mode !== "draw"} className="flex min-h-0 flex-1 flex-col [&[hidden]]:hidden">
+          <DrawItFlow key={drawRun.key} initial={drawRun.initial} {...modeProps("draw")} />
+        </div>
+        <div hidden={mode !== "describe"} className="flex min-h-0 flex-1 flex-col [&[hidden]]:hidden">
+          <DescribeItFlow {...modeProps("describe")} />
+        </div>
       </div>
     </div>
   );

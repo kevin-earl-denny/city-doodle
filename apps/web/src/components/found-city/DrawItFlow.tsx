@@ -26,8 +26,26 @@ const DEFAULT_GROWTH: GrowthSettings = {
   district_size_meters: DEFAULT_WORLD_SETTINGS.district_size_meters,
 };
 
+/** Prefill for Draw it, e.g. from a Describe-it brief ("Edit in Draw it"). */
+export interface DrawItInitial {
+  land: GeographicSetting;
+  story: GrowthStoryId;
+  /** Street settings; any that differ from the story show as tweaks. */
+  settings: GrowthSettings;
+  name: string;
+}
+
 function pick<T>(items: readonly T[]): T {
   return items[Math.floor(Math.random() * items.length)];
+}
+
+/** The fields of `settings` that differ from `base`. */
+function diffSettings(settings: GrowthSettings, base: GrowthSettings): Partial<GrowthSettings> {
+  const out: Partial<GrowthSettings> = {};
+  for (const key of Object.keys(base) as (keyof GrowthSettings)[]) {
+    if (settings[key] !== base[key]) out[key] = settings[key];
+  }
+  return out;
 }
 
 function newName(land: GeographicSetting): string {
@@ -44,19 +62,23 @@ export function DrawItFlow({
   foundError,
   panelId,
   tabId,
-}: FoundCityModeProps) {
-  const [step, setStep] = useState(1);
-  const [reached, setReached] = useState(1);
-  const [land, setLand] = useState<GeographicSetting>(DEFAULT_WORLD_SETTINGS.geographic_setting);
-  const [story, setStory] = useState<GrowthStoryId | null>(null);
-  const [tweaks, setTweaks] = useState<Partial<Pick<GrowthSettings, TweakableSetting>>>({});
-  const [name, setName] = useState(() => newName(DEFAULT_WORLD_SETTINGS.geographic_setting));
+  initial,
+}: FoundCityModeProps & { initial?: DrawItInitial }) {
+  // A prefilled flow opens on step 2 with every step reachable.
+  const [step, setStep] = useState(initial ? 2 : 1);
+  const [reached, setReached] = useState(initial ? 3 : 1);
+  const [land, setLand] = useState<GeographicSetting>(initial?.land ?? DEFAULT_WORLD_SETTINGS.geographic_setting);
+  const [story, setStory] = useState<GrowthStoryId | null>(initial?.story ?? null);
+  const [tweaks, setTweaks] = useState<Partial<GrowthSettings>>(() =>
+    initial ? diffSettings(initial.settings, getGrowthStory(initial.story).settings) : {},
+  );
+  const [name, setName] = useState(() => initial?.name ?? newName(DEFAULT_WORLD_SETTINGS.geographic_setting));
   const [suggestionSeed, setSuggestionSeed] = useState(() => Date.now());
 
   const storyValues = story ? getGrowthStory(story).settings : DEFAULT_GROWTH;
   const values: GrowthSettings = { ...storyValues, ...tweaks };
   const tweaked =
-    story !== null && (Object.keys(tweaks) as TweakableSetting[]).some((k) => tweaks[k] !== storyValues[k]);
+    story !== null && (Object.keys(tweaks) as (keyof GrowthSettings)[]).some((k) => tweaks[k] !== storyValues[k]);
 
   const suggestions = useMemo(
     () =>
