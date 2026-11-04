@@ -31,7 +31,7 @@ def upgrade() -> None:
         "civic",
         "transit",
         name="district_type",
-        create_type=True,
+        create_type=False,  # created explicitly below; True would re-CREATE it in create_table (CITY-684)
     )
     district_type.create(op.get_bind(), checkfirst=True)
 

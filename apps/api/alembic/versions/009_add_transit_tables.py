@@ -24,7 +24,7 @@ def upgrade() -> None:
         "subway",
         "rail",
         name="station_type",
-        create_type=True,
+        create_type=False,  # created explicitly below; True would re-CREATE it in create_table (CITY-684)
     )
     station_type.create(op.get_bind(), checkfirst=True)
 
@@ -33,7 +33,7 @@ def upgrade() -> None:
         "subway",
         "rail",
         name="line_type",
-        create_type=True,
+        create_type=False,  # created explicitly below; True would re-CREATE it in create_table (CITY-684)
     )
     line_type.create(op.get_bind(), checkfirst=True)
 
