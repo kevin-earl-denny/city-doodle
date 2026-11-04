@@ -5,7 +5,6 @@ import {
   useCallback,
   forwardRef,
   useImperativeHandle,
-  useContext,
   useMemo,
 } from "react";
 import { Application, Container } from "pixi.js";
@@ -36,7 +35,7 @@ import {
   type ExportOptions,
   type ExportResult,
 } from "./useCanvasExport";
-import { MapCanvasContextInternal } from "./MapCanvasContext";
+import { useRegisterCanvasExport } from "./MapCanvasContext";
 import { useFeaturesStateOptional, useFeaturesDispatchOptional } from "./FeaturesContext";
 import { useTerrainOptional } from "./TerrainContext";
 import { useTransitOptional } from "./TransitContext";
@@ -152,7 +151,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(
   } | null>(null);
 
   // --- Contexts ---
-  const canvasContext = useContext(MapCanvasContextInternal);
   const zoomContext = useZoomOptional();
   const zoom = zoomContext?.zoom ?? zoomProp;
   const onZoomChange = zoomContext?.setZoom ?? onZoomChangeProp;
@@ -281,15 +279,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(
 
   useImperativeHandle(ref, () => exportHandle, [isReady]);
 
-  // Register with context if available
-  useEffect(() => {
-    if (canvasContext) {
-      canvasContext.registerCanvas(isReady ? exportHandle : null);
-      return () => {
-        canvasContext.registerCanvas(null);
-      };
-    }
-  }, [canvasContext, isReady]);
+  // Register with the export context, if any (CITY-698: see useRegisterCanvasExport)
+  useRegisterCanvasExport(exportHandle, isReady);
 
   // --- Visibility change callback ---
   const handleVisibilityChange = useCallback(

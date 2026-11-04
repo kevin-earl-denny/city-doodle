@@ -5,7 +5,7 @@
  * functionality without needing direct parent-child relationships.
  */
 
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from "react";
 import type { ExportOptions, ExportResult } from "./useCanvasExport";
 
 interface MapCanvasContextValue {
@@ -26,9 +26,6 @@ interface CanvasExportHandle {
 }
 
 const MapCanvasContext = createContext<MapCanvasContextValue | null>(null);
-
-// Export for internal use by MapCanvas (to register itself)
-export const MapCanvasContextInternal = MapCanvasContext;
 
 interface MapCanvasProviderProps {
   children: ReactNode;
@@ -61,12 +58,11 @@ export function MapCanvasProvider({ children }: MapCanvasProviderProps) {
     [canvasHandle]
   );
 
-  const value: MapCanvasContextValue = {
-    isReady: canvasHandle?.isReady ?? false,
-    registerCanvas,
-    exportAsPng,
-    captureAsPng,
-  };
+  const isReady = canvasHandle?.isReady ?? false;
+  const value = useMemo<MapCanvasContextValue>(
+    () => ({ isReady, registerCanvas, exportAsPng, captureAsPng }),
+    [isReady, registerCanvas, exportAsPng, captureAsPng]
+  );
 
   return (
     <MapCanvasContext.Provider value={value}>
@@ -93,4 +89,33 @@ export function useMapCanvasExport() {
  */
 export function useMapCanvasExportOptional() {
   return useContext(MapCanvasContext);
+}
+
+/**
+ * Register a canvas's export handle with the nearest MapCanvasProvider (no-op
+ * outside one). It registers when `isReady` turns true and unregisters when it
+ * turns false or the canvas unmounts.
+ *
+ * `handle` may be a new object on every render. Only the first one after
+ * `isReady` turns true is registered, so its methods must read live state
+ * from refs.
+ *
+ * CITY-698: the effect depends on the stable `registerCanvas` callback, never
+ * on the context value. Registering stores the handle in provider state, which
+ * re-renders the canvas, and depending on the value turned that into an
+ * endless effect -> setState -> render loop. The loop grew the JS heap
+ * ~15 MB/s until Chrome killed the tab ("Aw, Snap!", error code 5).
+ */
+export function useRegisterCanvasExport(handle: CanvasExportHandle, isReady: boolean) {
+  const registerCanvas = useContext(MapCanvasContext)?.registerCanvas;
+  const handleRef = useRef(handle);
+  handleRef.current = handle;
+
+  useEffect(() => {
+    if (!registerCanvas) return;
+    registerCanvas(isReady ? handleRef.current : null);
+    return () => {
+      registerCanvas(null);
+    };
+  }, [registerCanvas, isReady]);
 }
