@@ -83,8 +83,12 @@ def _evict_idle(table: dict[UUID, deque[float]], now: float, span: float) -> Non
         del table[key]
 
 
-def _check_rate_limit(user_id: UUID, *, record: bool = True) -> None:
-    """Raise if any per-process window is full. Records the call when `record` is set."""
+def _check_rate_limit(user_id: UUID) -> float:
+    """Raise if any per-process window is full, else record the call and return its stamp.
+
+    Checking and recording happen with no await in between, so concurrent requests
+    from one user can't all slip past the check before any of them is recorded.
+    """
     now = time.monotonic()
     if len(_recent) > 1000:
         _evict_idle(_recent, now, 60)
@@ -104,17 +108,21 @@ def _check_rate_limit(user_id: UUID, *, record: bool = True) -> None:
     if len(day) >= settings.brief_daily_limit_per_user:
         raise BriefRateLimitedError()
 
-    if record:
-        minute.append(now)
-        day.append(now)
-        _global.append(now)
-
-
-def _record_call(user_id: UUID) -> None:
-    now = time.monotonic()
-    _recent.setdefault(user_id, deque()).append(now)
-    _daily.setdefault(user_id, deque()).append(now)
+    minute.append(now)
+    day.append(now)
     _global.append(now)
+    return now
+
+
+def _unrecord_call(user_id: UUID, stamp: float) -> None:
+    """Give back a recorded slot, used when the global daily cap rejects the call."""
+    for window in (_recent.get(user_id), _daily.get(user_id), _global):
+        if window is None:
+            continue
+        try:
+            window.remove(stamp)
+        except ValueError:
+            pass  # already pruned
 
 
 # Atomic upsert: works on Postgres and SQLite (>= 3.35 for RETURNING).
@@ -146,12 +154,15 @@ async def _check_global_daily_cap(db: AsyncSession) -> None:
 
 async def generate_brief(request: BriefRequest, user_id: UUID, db: AsyncSession) -> WorldBrief:
     client = _get_client()
-    # Check the cheap per-process windows first, without recording. The shared
-    # counter is only incremented for calls that will really run, and per-user
-    # slots are only spent once the global cap has accepted the call.
-    _check_rate_limit(user_id, record=False)
-    await _check_global_daily_cap(db)
-    _record_call(user_id)
+    # Record the per-process slot synchronously, before any await (that ordering
+    # is what blocks concurrent bursts). If the shared daily cap then rejects
+    # the call, give the slot back, so a global rejection doesn't cost the user.
+    stamp = _check_rate_limit(user_id)
+    try:
+        await _check_global_daily_cap(db)
+    except BriefError:
+        _unrecord_call(user_id, stamp)
+        raise
 
     previous = request.previous
     if previous is not None:

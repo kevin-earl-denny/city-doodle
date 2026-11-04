@@ -285,8 +285,7 @@ def _install_fake(monkeypatch, *, result=None, exc=None) -> _FakeMessages:
     monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
     monkeypatch.setattr(service.settings, "brief_enabled", True)
     monkeypatch.setattr(service, "_client", fake)
-    monkeypatch.setattr(service, "_check_rate_limit", lambda user_id, **kw: None)
-    monkeypatch.setattr(service, "_record_call", lambda user_id: None)
+    monkeypatch.setattr(service, "_check_rate_limit", lambda user_id: 0.0)
 
     async def _no_cap(db):
         return None
@@ -540,3 +539,55 @@ class TestReviewFollowups487:
         )
         brief, _, _ = compile_brief(raw)
         BriefRequest(prompt="a port", previous=brief, refinement="more hills")  # must not raise
+
+
+class TestConcurrency:
+    @pytest.mark.asyncio
+    async def test_concurrent_burst_from_one_user_respects_per_minute_limit(self, monkeypatch):
+        """#487 review (f9): every await between check and record lets a burst through."""
+        import asyncio
+
+        calls = {"n": 0}
+
+        class CountingMessages:
+            async def parse(self, **kwargs):
+                calls["n"] += 1
+                return _FakeResponse("end_turn", make_brief())
+
+        import types
+
+        monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
+        monkeypatch.setattr(service.settings, "brief_enabled", True)
+        monkeypatch.setattr(service.settings, "brief_rate_limit_per_minute", 8)
+        monkeypatch.setattr(service.settings, "brief_global_limit_per_minute", 1000)
+        monkeypatch.setattr(
+            service,
+            "_client",
+            types.SimpleNamespace(beta=types.SimpleNamespace(messages=CountingMessages())),
+        )
+
+        async def yielding_cap(db):
+            await asyncio.sleep(0)  # a real DB round trip yields to the event loop
+
+        monkeypatch.setattr(service, "_check_global_daily_cap", yielding_cap)
+        user = UUID(int=777)
+        service._recent.pop(user, None)
+        service._daily.pop(user, None)
+        service._global.clear()
+
+        results = await asyncio.gather(
+            *(service.generate_brief(_req(), user, None) for _ in range(50)),
+            return_exceptions=True,
+        )
+        assert calls["n"] == 8
+        assert sum(isinstance(r, service.BriefRateLimitedError) for r in results) == 42
+        service._global.clear()
+
+    def test_previous_size_counts_characters_not_escapes(self):
+        """CJK text must not be over-counted via \\uXXXX escapes."""
+        from city_api.brief.schema import BriefRequest
+
+        story = "港" * 390  # 390 chars; json.dumps(ensure_ascii=True) would be ~2340
+        legend = {k: "坂" * 110 for k in ("water", "river", "ground", "streets")}
+        prev = make_brief(founding_story=story, legend=legend, unsupported=["雪" * 110] * 6)
+        BriefRequest(prompt="a port", previous=prev, refinement="more hills")  # must not raise
