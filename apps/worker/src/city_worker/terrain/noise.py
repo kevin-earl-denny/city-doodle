@@ -60,7 +60,7 @@ def generate_heightfield(
     octaves: int = 6,
     persistence: float = 0.5,
     lacunarity: float = 2.0,
-    scale: float = 0.3143,
+    scale: float = 0.01,
 ) -> NDArray[np.float64]:
     """Generate a heightfield for a single tile.
 
@@ -77,7 +77,7 @@ def generate_heightfield(
         octaves: Noise octaves
         persistence: Amplitude decay
         lacunarity: Frequency growth
-        scale: Base frequency scale (CITY-624: 0.3143 for pixel-space tile_size=256)
+        scale: Base frequency in cycles per world unit (CITY-650: 0.01 = ~2.6 cycles per 256-unit tile)
 
     Returns:
         2D numpy array of heights normalized to [0, 1]
@@ -99,7 +99,14 @@ def generate_heightfield(
     frequency = scale
     max_amplitude = 0.0
 
-    for _ in range(octaves):
+    # CITY-650: skip octaves finer than the sample grid can represent.
+    # Above half the Nyquist rate (resolution / 4 cycles per tile) an
+    # octave aliases into per-sample speckle that shows up as puddles.
+    max_frequency = resolution / (4.0 * tile_size)
+
+    for octave in range(octaves):
+        if octave > 0 and frequency > max_frequency:
+            break
         # noise2array(x_scaled, y_scaled) returns shape (len(y), len(x))
         total += amplitude * simplex.noise2array(xs * frequency, ys * frequency)
         max_amplitude += amplitude
