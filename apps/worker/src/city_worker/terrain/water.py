@@ -507,14 +507,14 @@ def _suppress_parallel_rivers(
     """Suppress shorter rivers that run parallel to longer ones (CITY-490).
 
     Two rivers are considered parallel if more than *overlap_fraction* of
-    the shorter river's vertices are within *proximity_threshold* distance
+    the shorter river's length lies within *proximity_threshold* distance
     of the longer river's LineString.
 
     Args:
         features: List of river TerrainFeatures
         proximity_threshold: Maximum distance (world units) to consider
             two rivers as parallel
-        overlap_fraction: Fraction of the shorter river's vertices that
+        overlap_fraction: Fraction of the shorter river's length that
             must be proximate to trigger suppression
 
     Returns:
@@ -533,7 +533,8 @@ def _suppress_parallel_rivers(
         a_idx, a_feat = indexed[a_pos]
         if a_idx in suppressed:
             continue
-        a_line = LineString(a_feat.geometry["coordinates"])
+        a_zone = LineString(a_feat.geometry["coordinates"]).buffer(proximity_threshold)
+        ax0, ay0, ax1, ay1 = a_zone.bounds
 
         for b_pos in range(a_pos + 1, len(indexed)):
             b_idx, b_feat = indexed[b_pos]
@@ -541,17 +542,18 @@ def _suppress_parallel_rivers(
                 continue
 
             b_coords = b_feat.geometry["coordinates"]
-            if not b_coords:
+            if len(b_coords) < 2:
+                continue
+            b_line = LineString(b_coords)
+            bx0, by0, bx1, by1 = b_line.bounds
+            if bx0 > ax1 or bx1 < ax0 or by0 > ay1 or by1 < ay0 or b_line.length == 0:
                 continue
 
-            # Count how many of b's vertices are within threshold of a
-            from shapely.geometry import Point as _Point
-            close_count = 0
-            for bx, by in b_coords:
-                if a_line.distance(_Point(bx, by)) <= proximity_threshold:
-                    close_count += 1
-
-            if close_count / len(b_coords) >= overlap_fraction:
+            # Fraction of b's *length* near a (CITY-683). Counting vertices
+            # stopped approximating length once rivers are simplified, since
+            # vertices cluster on bends.
+            near = b_line.intersection(a_zone).length / b_line.length
+            if near >= overlap_fraction:
                 suppressed.add(b_idx)
 
     return [f for i, f in enumerate(features) if i not in suppressed]
@@ -803,6 +805,16 @@ def extract_rivers(
                 # of the original path, then sample at each smoothed vertex.
                 smoothed_widths = _interpolate_widths(coords, raw_widths, list(smoothed_line.coords))
 
+                # CITY-683: delta detection needs the flow direction at the
+                # mouth. Take it from the dense smoothed curve (its last 6
+                # points span a fraction of a pixel, i.e. the true tangent),
+                # since the simplified line's last vertices can span most of
+                # a short river.
+                tail = smoothed[-6:]
+                mdx, mdy = tail[-1][0] - tail[0][0], tail[-1][1] - tail[0][1]
+                mag = (mdx * mdx + mdy * mdy) ** 0.5
+                mouth_direction = [round(mdx / mag, 4), round(mdy / mag, 4)] if mag > 1e-10 else None
+
                 features.append(
                     TerrainFeature(
                         type="river",
@@ -816,6 +828,7 @@ def extract_rivers(
                             "widths": [round(w, 2) for w in smoothed_widths],
                             "max_flow": round(max_flow, 1),
                             "avg_flow": round(avg_flow, 1),
+                            "mouth_direction": mouth_direction,
                         },
                     )
                 )

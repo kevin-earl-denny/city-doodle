@@ -1830,6 +1830,22 @@ class TestRiverImprovements:
             # Unsimplified output was 192-640 vertices for this fixture
             assert len(coords) < 64
             assert len(river.properties["widths"]) == len(coords)
+            # Mouth direction is a unit vector recorded before simplification
+            mdx, mdy = river.properties["mouth_direction"]
+            assert abs((mdx * mdx + mdy * mdy) ** 0.5 - 1) < 1e-3
+
+    def test_simplified_river_stays_on_smoothed_curve(self):
+        """CITY-683: simplification only drops points within tolerance."""
+        from shapely.geometry import LineString
+
+        from city_worker.terrain.water import RIVER_OUTPUT_SIMPLIFY_CELLS, _chaikin_smooth
+
+        cell_size = 2.0
+        path = [(0, 0), (10, 6), (20, 2), (30, 12), (40, 4)]
+        smoothed = LineString(_chaikin_smooth(path, iterations=6))
+        simplified = smoothed.simplify(cell_size * RIVER_OUTPUT_SIMPLIFY_CELLS, preserve_topology=False)
+        assert len(simplified.coords) < len(smoothed.coords) / 4
+        assert simplified.hausdorff_distance(smoothed) <= cell_size * RIVER_OUTPUT_SIMPLIFY_CELLS + 1e-9
 
 
 class TestGeographicMasks:
