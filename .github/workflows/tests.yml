@@ -4,9 +4,10 @@
 # back to bare pytest, so this check was green no matter what.
 #
 # The repo-tooling suite (tests/) runs in vibe-tests.yml. App suites run here
-# as parallel jobs. "Run Tests" is an aggregate job that fails
-# unless every suite succeeded; it is the one context to mark required, so
-# adding or renaming a suite job never touches branch protection.
+# as parallel jobs, and "Run Tests" is an aggregate job that fails unless every
+# suite succeeded. Branch protection (CITY-638) must require BOTH "Run Tests"
+# and "Vibe tests"; requiring the aggregate (not each suite job) means adding
+# or renaming a suite job never touches branch protection.
 #
 # Playwright e2e needs Postgres + API + web servers and isn't reliable in CI
 # yet; it lives in e2e.yml as a non-required job.
@@ -22,8 +23,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # Supersede stale PR runs only; every push to main keeps its own result.
+  # PR runs share a group per PR and supersede each other; push runs are
+  # grouped by commit SHA so every commit on main gets its own result (a
+  # shared group would cancel or replace runs when merges land close together).
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

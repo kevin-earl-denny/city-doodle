@@ -16,10 +16,12 @@ on:
     - cron: '0 9 * * 1'
 
 concurrency:
-  # Event name included so the weekly schedule and a main push never cancel
-  # each other (the push run is the only one that produces the SBOM).
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # PR runs share a group per PR and supersede each other; push runs are
+  # grouped by commit SHA so every commit on main gets its own result (a
+  # shared group would cancel or replace runs when merges land close together).
+  # Event name keeps the weekly schedule separate from pushes.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

@@ -21,8 +21,11 @@ on:
     branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # PR runs share a group per PR and supersede each other; push runs are
+  # grouped by commit SHA so every commit on main gets its own result (a
+  # shared group would cancel or replace runs when merges land close together).
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
