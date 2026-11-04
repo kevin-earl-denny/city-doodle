@@ -22,9 +22,10 @@ Resolve every external blocker on a PR: feedback from **all** reviewers (CodeRab
 4. Fetches and fixes ALL CodeRabbit feedback (current + old, including nitpicks and outside-diff-range)
 5. Fetches and fixes agent-review findings and any other PR comments. This repo has no human reviewers.
 6. **Second-pass validation** — re-run migrations, lint, and tests again (feedback fixes can introduce new breakage)
-7. Replies on every addressed review thread; resolves agent-review threads, but never CodeRabbit's (CodeRabbit resolves its own on re-review)
-8. **Notes CHANGES_REQUESTED review state** — the push will trigger each bot's re-review automatically
-9. Pushes and posts a PR comment summarizing changes
+7. **Notes CHANGES_REQUESTED review state**
+8. Pushes and posts a PR comment summarizing changes
+9. After the push, replies on every addressed review thread (naming the pushed commit); resolves agent-review threads, but never CodeRabbit's (CodeRabbit resolves its own on re-review)
+10. Requests one CodeRabbit re-review
 
 ## Instructions
 
@@ -133,7 +134,7 @@ query($owner:String!, $repo:String!, $number:Int!) {
 ```
 
 Group the threads by author so none is overlooked, and separate by state:
-- **Unresolved (any author)** — must address, then reply on the thread (Step 5).
+- **Unresolved (any author)** — must address, then reply on the thread after pushing (Step 6b).
 - **Resolved (bot-authored)** — scan for threads resolved without actually being fixed; bots (CodeRabbit especially) sometimes append new feedback to an old resolved thread.
 
 Fetch **every** PR-level review body and plain PR comment too, from all authors. CodeRabbit's summary (batch nitpicks, outside-diff findings) is an issue comment, and agent reviews are review bodies from a user account, so a bot-only filter misses them:
@@ -213,37 +214,11 @@ ruff check lib bin && ruff format --check lib bin && python3 -m pytest tests -q
 
 Only run checks relevant to the files changed across the entire diff (original + rebase + feedback fixes). **Fix anything that fails.** If a fix here introduces yet another failure, keep iterating until clean — do not push a branch that fails local checks.
 
-### Step 5: Reply on addressed review threads (never resolve CodeRabbit's)
-
-> **The author must never cause CodeRabbit's approval.** A CodeRabbit APPROVED on the head passes the merge bar by itself, and CodeRabbit approves once its threads are resolved. So:
-> - **Never resolve a CodeRabbit thread yourself.** Reply on it instead and let CodeRabbit resolve it when it re-reviews (Step 5b).
-> - **Never type `@coderabbitai approve` or `@coderabbitai resolve`** in any comment or reply. You post as the PR author, and those commands would approve your own PR. (`.coderabbit.yaml` also sets `allow_author_approval: false`.)
-
-**CodeRabbit threads:** for every thread you addressed, reply on it with what changed (file:line and the commit) or, if you skipped it, why (Step 3). Leave it unresolved.
-
-**Agent-review threads (the `kdenny` account):** reply the same way, then resolve the thread. That includes old threads that were addressed earlier but never resolved.
-
-```bash
-# Reply on a thread (any reviewer): the first comment's databaseId from Step 2a
-gh api repos/kevin-earl-denny/city-doodle/pulls/<PR_NUMBER>/comments/<COMMENT_DATABASE_ID>/replies \
-  -f body="Fixed in <sha>: <what changed, file:line>"
-
-# Agent-review threads ONLY (never CodeRabbit's): resolve by GraphQL thread ID
-gh api graphql -f query='
-mutation($threadId: ID!) {
-  resolveReviewThread(input: {threadId: $threadId}) {
-    thread { isResolved }
-  }
-}' -F threadId='<THREAD_ID>'
-```
-
-Do this for EVERY addressed thread, from every reviewer.
-
-### Step 5b: Note CHANGES_REQUESTED review state (any reviewer)
+### Step 5: Note CHANGES_REQUESTED review state (any reviewer)
 
 **Important:** Resolving review threads is NOT the same as clearing the review-level CHANGES_REQUESTED state. A PR with all threads resolved but a stale CHANGES_REQUESTED review will still show "Changes requested" in the UI. This applies to CodeRabbit's reviews.
 
-After replying on all threads, check which reviewers have CHANGES_REQUESTED (REST logins keep the `[bot]` suffix):
+Check which reviewers have CHANGES_REQUESTED (REST logins keep the `[bot]` suffix):
 
 ```bash
 gh api repos/kevin-earl-denny/city-doodle/pulls/<PR_NUMBER>/reviews \
@@ -252,7 +227,7 @@ gh api repos/kevin-earl-denny/city-doodle/pulls/<PR_NUMBER>/reviews \
 
 **Merge bar reminder (required `review-gate` status, `lib/vibe/review_gate.py`):** a PR is mergeable when CodeRabbit's latest state-changing review is **APPROVED on the current head**, **or** at least **2 distinct agent reviewers** (not the PR author) posted `pass`/`minor` reviews on the current head. Any `major` on the head blocks it. Every fixup push moves the head and resets the count, so the PR needs a fresh CodeRabbit approval or fresh agent reviews on the new head. After a **pure rebase** with no other change, carry the agent reviews instead: post a PR comment with `git range-diff` output and, on its own line, `<!-- city-rebase-carry v1 from=<old full sha> to=<new full sha> -->` (the gate verifies it with `git patch-id`; CodeRabbit approval never carries). Check with `bin/vibe review-gate <PR_NUMBER>`.
 
-**CodeRabbit does not re-review on push in this repo.** `.coderabbit.yaml` sets `auto_pause_after_reviewed_commits: 1`, so only the first push is auto-reviewed. After the Step 6 push, request a re-review **once** with a PR comment: `gh pr comment <PR_NUMBER> --body "@coderabbitai review"`. That re-review reads your thread replies, resolves the threads it agrees are fixed, and, once all of its threads are resolved, produces the APPROVE that alone satisfies the merge bar (`auto_approvals.enabled: true`). CodeRabbit decides that, never the author: don't resolve its threads, and never post `@coderabbitai approve` or `@coderabbitai resolve`. Don't post it more than once per fixup round, because each request uses fair-use quota. If CodeRabbit is rate-limited, note "pending re-review (coderabbit)" in the fixup summary. 
+**CodeRabbit does not re-review on push in this repo.** `.coderabbit.yaml` sets `auto_pause_after_reviewed_commits: 1`, so only the first push is auto-reviewed. After the Step 6 push **and** the Step 6b thread replies, request a re-review **once** with a PR comment (Step 6c): `gh pr comment <PR_NUMBER> --body "@coderabbitai review"`. That re-review reads your thread replies, resolves the threads it agrees are fixed, and, once all of its threads are resolved, produces the APPROVE that alone satisfies the merge bar (`auto_approvals.enabled: true`). CodeRabbit decides that, never the author: don't resolve its threads, and never post `@coderabbitai approve` or `@coderabbitai resolve`. Don't post it more than once per fixup round, because each request uses fair-use quota. If CodeRabbit is rate-limited, note "pending re-review (coderabbit)" in the fixup summary. 
 
 ### Step 6: Commit, push, and comment
 
@@ -275,7 +250,7 @@ git push origin <branch>
 # verified was fully contained BEFORE the rebase. If someone pushed since, the
 # lease fails — fetch, integrate, and redo Step 1 rather than overriding it.
 #   git push --force-with-lease=<branch>:"$REMOTE_SHA" origin <branch>
-# Pushing does NOT re-trigger CodeRabbit here — request it in Step 5b.
+# Pushing does NOT re-trigger CodeRabbit here — request it in Step 6c.
 ```
 
 Then post a PR comment summarizing all changes:
@@ -296,13 +271,47 @@ gh pr comment <PR_NUMBER> --repo kevin-earl-denny/city-doodle --body "$(cat <<'E
 **CI fixes:**
 - [what was fixed — lint, tests, migrations, etc.]
 
-**Replied on every addressed thread:** ✅ (agent-review threads resolved; CodeRabbit threads left for CodeRabbit to resolve on re-review)
+**Thread replies:** posted next on every addressed thread, naming this push (agent-review threads resolved; CodeRabbit threads left for CodeRabbit to resolve on re-review)
 
 ---
 *Generated by `/fixup`*
 EOF
 )"
 ```
+
+### Step 6b: Reply on addressed review threads, after the push (never resolve CodeRabbit's)
+
+Do this only once Step 6 has pushed, so every reply names a commit that is on the PR. Never reply "fixed" about uncommitted work.
+
+> **The author must never cause CodeRabbit's approval.** A CodeRabbit APPROVED on the head passes the merge bar by itself, and CodeRabbit approves once its threads are resolved. So:
+> - **Never resolve a CodeRabbit thread yourself.** Reply on it instead and let CodeRabbit resolve it when it re-reviews (Step 6c).
+> - **Never type `@coderabbitai approve` or `@coderabbitai resolve`** in any comment or reply. You post as the PR author, and those commands would approve your own PR. (`.coderabbit.yaml` also sets `allow_author_approval: false`.)
+
+**CodeRabbit threads:** for every thread you addressed, reply on it with what changed (file:line and the commit) or, if you skipped it, why (Step 3). Leave it unresolved.
+
+**Agent-review threads (the `kdenny` account):** reply the same way, then resolve the thread. That includes old threads that were addressed earlier but never resolved.
+
+```bash
+# Reply on a thread (any reviewer): the first comment's databaseId from Step 2a
+gh api repos/kevin-earl-denny/city-doodle/pulls/<PR_NUMBER>/comments/<COMMENT_DATABASE_ID>/replies \
+  -f body="Fixed in <pushed sha>: <what changed, file:line>"
+
+# Agent-review threads ONLY (never CodeRabbit's): resolve by GraphQL thread ID
+gh api graphql -f query='
+mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { isResolved }
+  }
+}' -F threadId='<THREAD_ID>'
+```
+
+Do this for EVERY addressed thread, from every reviewer.
+
+**If CodeRabbit's re-review leaves a thread open** that you've fixed or justified, still don't resolve it yourself. Reply once more with concrete evidence (file:line, test, commit). If it stays open, the PR can still clear the merge bar the other way: 2 clean agent reviews on the head. Tell the coordinator (or the user) which thread is stuck and that the PR needs agent reviews.
+
+### Step 6c: Request CodeRabbit's re-review
+
+After the Step 6b replies: `gh pr comment <PR_NUMBER> --body "@coderabbitai review"`, once per fixup round (see Step 5).
 
 ### Step 7: Verify
 
@@ -332,7 +341,7 @@ query($owner:String!, $repo:String!, $number:Int!) {
 # Confirm no CHANGES_REQUESTED reviews remain (threads resolved ≠ review approved)
 gh api repos/kevin-earl-denny/city-doodle/pulls/<PR_NUMBER>/reviews \
   --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length'
-# If > 0 for coderabbitai[bot], confirm the `@coderabbitai review` comment from Step 5b was posted — note "pending re-review" in the report
+# If > 0 for coderabbitai[bot], confirm the `@coderabbitai review` comment from Step 6c was posted — note "pending re-review" in the report
 ```
 
 Report the final state to the user:

@@ -124,7 +124,7 @@ Give each finding a `file:line`, the concrete failure scenario, and the fix.
 
 ### Step 6a: Your own branch: fix and push
 
-Fix the auto-fixable findings (90%+ confidence), flag trade-offs for the user, re-run Step 4, reply on any CodeRabbit thread you fixed (don't resolve it, and never post `@coderabbitai approve`/`resolve`: see below), commit with explicit paths (`git add -- <paths>`, never `git add -A`), rebase on the PR base, and push with `git push --force-with-lease origin HEAD`. A push resets the review count: the new head needs fresh reviews.
+Fix the auto-fixable findings (90%+ confidence), flag trade-offs for the user, re-run Step 4, commit with explicit paths (`git add -- <paths>`, never `git add -A`), rebase on the PR base, and push with `git push --force-with-lease origin HEAD`. Then reply on each CodeRabbit thread you fixed, naming the pushed commit (don't resolve it, and never post `@coderabbitai approve`/`resolve`: see below). A push resets the review count: the new head needs fresh reviews.
 
 ### Step 6b: Someone else's PR: post an agent review
 
