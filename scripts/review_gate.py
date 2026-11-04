@@ -221,19 +221,31 @@ def set_status(token: str, repo: str, sha: str, state: str, description: str) ->
     _request(token, "POST", f"{API}/repos/{repo}/statuses/{sha}", payload)
 
 
+#: Where carry verification keeps the base branch it fetched. A private namespace,
+#: so a local `bin/vibe review-gate` never moves the user's `refs/remotes/origin/*`.
+BASE_REF_NS = "refs/review-gate/base"
+
+
 def _git(token: str | None, *args: str, stdin: str | None = None, cwd: Path | None = None) -> str:
-    cmd = ["git"]
+    env = None
     if token:
-        # Auth for this one call only: the token never lands in .git/config.
+        # Auth for this one call only, passed as GIT_CONFIG_* environment entries:
+        # never on the command line (any local user can read argv with `ps`) and
+        # never written to .git/config.
         basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        cmd += ["-c", f"http.https://github.com/.extraheader=AUTHORIZATION: basic {basic}"]
+        env = dict(os.environ)
+        n = int(env.get("GIT_CONFIG_COUNT") or 0)  # keep any entries the caller set
+        env["GIT_CONFIG_COUNT"] = str(n + 1)
+        env[f"GIT_CONFIG_KEY_{n}"] = "http.https://github.com/.extraheader"
+        env[f"GIT_CONFIG_VALUE_{n}"] = f"AUTHORIZATION: basic {basic}"
     out = subprocess.run(
-        cmd + list(args),
+        ["git", *args],
         cwd=cwd or GIT_DIR,
         input=stdin,
         capture_output=True,
         text=True,
         check=True,
+        env=env,
     )
     return out.stdout
 
@@ -241,12 +253,14 @@ def _git(token: str | None, *args: str, stdin: str | None = None, cwd: Path | No
 def carry_verifier(token: str | None, base_ref: str, *, fetch: bool = True):
     """``verify(old, new)`` for evaluate(): None if both heads carry the same patch.
 
-    ``fetch=False`` skips fetching (tests: the commits are already local).
+    The base branch is fetched into ``BASE_REF_NS``, never over a remote-tracking
+    ref. ``fetch=False`` skips fetching (tests: the commits and that ref are local).
     """
     fetched: set[str] = set()
+    base = f"{BASE_REF_NS}/{base_ref}"
 
     def patch_id(sha: str) -> str:
-        merge_base = _git(None, "merge-base", f"refs/remotes/origin/{base_ref}", sha).strip()
+        merge_base = _git(None, "merge-base", base, sha).strip()
         diff = _git(None, "diff", "--no-ext-diff", "--no-textconv", "--binary", merge_base, sha)
         # --verbatim: whitespace counts (an indent change is a code change in Python/YAML).
         ids = _git(None, "patch-id", "--verbatim", stdin=diff).split()
@@ -260,13 +274,26 @@ def carry_verifier(token: str | None, base_ref: str, *, fetch: bool = True):
                     "fetch",
                     "--no-tags",
                     "--quiet",
+                    "--no-write-fetch-head",
+                    # Empty refmap: no "opportunistic" update of origin/* refs.
+                    "--refmap=",
                     "origin",
-                    f"+refs/heads/{base_ref}:refs/remotes/origin/{base_ref}",
+                    f"+refs/heads/{base_ref}:{base}",
                 )
                 fetched.add(base_ref)
             missing = [sha for sha in (old, new) if sha not in fetched]
             if fetch and missing:
-                _git(token, "fetch", "--no-tags", "--quiet", "origin", *missing)
+                _git(
+                    token,
+                    "fetch",
+                    "--no-tags",
+                    "--quiet",
+                    "--no-write-fetch-head",
+                    # Empty refmap: no "opportunistic" update of origin/* refs.
+                    "--refmap=",
+                    "origin",
+                    *missing,
+                )
                 fetched.update(missing)
             old_id, new_id = patch_id(old), patch_id(new)
         except subprocess.CalledProcessError as exc:
@@ -388,11 +415,18 @@ def _error(token: str, repo: str, sha: str | None, message: str) -> int:
             print(f"review-gate: also failed to set error status: {inner}", file=sys.stderr)
     # No status could be written, so an earlier `success` on the head may survive:
     # fail the job loudly (an annotation on the run) so it's visible and re-run.
-    print(
-        f"::error title=review-gate status not updated::{message}. The PR head's previous "
-        "review-gate status may be stale; re-run this job."
-    )  # stdout: where the Actions runner reads workflow commands
+    detail = _escape_command_data(
+        f"{message}. The PR head's previous review-gate status may be stale; re-run this job."
+    )
+    # stdout: where the Actions runner reads workflow commands
+    print(f"::error title=review-gate status not updated::{detail}")
     return 2
+
+
+def _escape_command_data(text: str) -> str:
+    """Escape a workflow command's message: a raw newline would end the command
+    and spill the rest of the text into the log as plain lines."""
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def gate_head(token: str, repo: str, head: str, must_include: int | None, as_json: bool) -> int:

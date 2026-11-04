@@ -239,6 +239,15 @@ def test_coderabbit_approval_on_old_head_not_counted() -> None:
     assert not result.coderabbit and not result.passed
 
 
+def test_bare_coderabbitai_login_is_not_coderabbit() -> None:
+    # `coderabbitai` (no [bot]) is an organization, not CodeRabbit's app (CITY-677).
+    from dataclasses import replace
+
+    impostor = replace(coderabbit(), login="coderabbitai")
+    result = run([impostor, agent("r1")])
+    assert not result.coderabbit and not result.passed
+
+
 def test_coderabbit_latest_state_wins_and_comments_dont_reset_it() -> None:
     approved_then_commented = [
         coderabbit("APPROVED", at="2026-10-27T00:30:00Z"),
@@ -773,6 +782,19 @@ def test_error_status_write_failure_also_fails_loudly(
     assert "::error title=review-gate status not updated::boom" in capsys.readouterr().out
 
 
+def test_error_annotation_escapes_newlines_and_percent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A raw newline ends a workflow command: the rest would leak into the log as
+    # plain lines and the annotation would be truncated (CITY-677).
+    gate = _script()
+    monkeypatch.setattr(gate, "set_status", lambda *_a: (_ for _ in ()).throw(OSError("down")))
+    assert gate._error("tok", "o/r", HEAD, "HTTP 502:\r\nbad gateway 100%") == 2
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1 and out.startswith("::error title=")
+    assert "HTTP 502:%0D%0Abad gateway 100%25" in out
+
+
 def test_sha_lookup_failure_sets_error(monkeypatch: pytest.MonkeyPatch) -> None:
     gate = _script()
     gh = FakeGitHub(monkeypatch, gate, {})
@@ -837,7 +859,7 @@ def test_carry_verifier_accepts_pure_rebase_and_rejects_changed_code(
     _git(repo, "switch", "-q", "main")
     (repo / "b.txt").write_text("unrelated\n")
     _git(repo, "add", "."), _git(repo, "commit", "-qm", "main moves")
-    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    _git(repo, "update-ref", f"{gate.BASE_REF_NS}/main", "main")
     _git(repo, "switch", "-q", "pr")
     _git(repo, "rebase", "-q", "main")
     rebased = _git(repo, "rev-parse", "HEAD")
@@ -856,6 +878,62 @@ def test_carry_verifier_accepts_pure_rebase_and_rejects_changed_code(
     # Indentation is code in Python/YAML: whitespace-only edits must not carry reviews.
     assert "not a pure rebase" in (verify(changed, indented) or "")
     assert "couldn't verify" in (verify("f" * 40, rebased) or "")
+
+
+def test_carry_fetch_leaves_the_users_remote_tracking_refs_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A local `bin/vibe review-gate` must not force-update origin/main in the
+    # user's clone: the base is fetched into a private ref namespace (CITY-677).
+    gate = _script()
+    upstream, clone = tmp_path / "upstream", tmp_path / "clone"
+    upstream.mkdir()
+    _git(upstream, "init", "-q", "-b", "main")
+    (upstream / "a.txt").write_text("one\n")
+    _git(upstream, "add", "."), _git(upstream, "commit", "-qm", "base")
+    _git(tmp_path, "clone", "-q", str(upstream), str(clone))
+    stale = _git(clone, "rev-parse", "refs/remotes/origin/main")
+    _git(upstream, "switch", "-qc", "pr")
+    (upstream / "a.txt").write_text("two\n")
+    _git(upstream, "commit", "-qam", "pr change")
+    old = _git(upstream, "rev-parse", "HEAD")
+    _git(upstream, "switch", "-q", "main")
+    (upstream / "b.txt").write_text("main moves\n")
+    _git(upstream, "add", "."), _git(upstream, "commit", "-qm", "main moves")
+    upstream_main = _git(upstream, "rev-parse", "main")
+    _git(upstream, "switch", "-q", "pr")
+    _git(upstream, "rebase", "-q", "main")
+    new = _git(upstream, "rev-parse", "HEAD")
+
+    monkeypatch.setattr(gate, "GIT_DIR", clone)
+    assert gate.carry_verifier(None, "main")(old, new) is None
+    assert _git(clone, "rev-parse", "refs/remotes/origin/main") == stale != upstream_main
+    assert _git(clone, "rev-parse", f"{gate.BASE_REF_NS}/main") == upstream_main
+
+
+def test_git_token_goes_in_the_environment_not_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    # argv is world-readable via `ps`; the auth header must not be on it (CITY-677).
+    import base64
+    import subprocess
+
+    gate = _script()
+    calls: list[tuple[list[str], dict | None]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd, kw.get("env")))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")  # an entry the caller already set survives
+    gate._git("s3cret", "fetch", "origin")
+    gate._git(None, "merge-base", "a", "b")
+    (cmd, env), (_, plain_env) = calls
+    secret = base64.b64encode(b"x-access-token:s3cret").decode()
+    assert cmd == ["git", "fetch", "origin"] and not any(secret in a for a in cmd)
+    assert env is not None and env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraheader"
+    assert env["GIT_CONFIG_VALUE_1"] == f"AUTHORIZATION: basic {secret}"
+    assert plain_env is None  # no token: the caller's environment, untouched
 
 
 # ── Edits can't change a verdict ─────────────────────────────────────────────
