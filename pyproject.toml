@@ -28,7 +28,9 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
-    "ruff>=0.1.0",
+    # Exact pin: `ruff format` output changes between releases, so CI (lint.yml),
+    # the pre-push hook and local runs must agree. Keep lint.yml in sync (CITY-651).
+    "ruff==0.17.3",
     # Config guard tests (tests/test_coderabbit_config.py) parse YAML; a hard
     # dev dependency so they can never be silently skipped.
     "pyyaml>=6.0",
@@ -58,7 +60,13 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
-ignore = ["E501"]
+ignore = [
+    "E501",
+    # UP042 wants `class X(str, Enum)` -> `StrEnum`. That is not a refactor:
+    # str()/format() of a member change from "X.member" to "member", and these
+    # enums feed SQLAlchemy ENUM columns and API schemas (CITY-651).
+    "UP042",
+]
 
 [tool.ruff.lint.isort]
 # apps/*/src packages are importable from tests and alembic migrations but live

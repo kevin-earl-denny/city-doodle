@@ -12,8 +12,8 @@ from uuid import UUID
 from city_worker.stadium.types import (
     Point,
     StadiumPlacement,
-    StreetOrientationResult,
     StreetGridImpactResult,
+    StreetOrientationResult,
 )
 
 
@@ -167,9 +167,7 @@ class StreetGridImpactCalculator:
         if not self.is_road_affected(road_geometry):
             return None
 
-        adjusted = compute_street_orientation(
-            road_geometry, self.stadium, orientation_strength
-        )
+        adjusted = compute_street_orientation(road_geometry, self.stadium, orientation_strength)
 
         return StreetOrientationResult(
             road_id=road_id,
@@ -195,9 +193,7 @@ class StreetGridImpactCalculator:
         affected_roads = []
 
         for road in roads:
-            result = self.adjust_road(
-                road.road_id, road.geometry, orientation_strength
-            )
+            result = self.adjust_road(road.road_id, road.geometry, orientation_strength)
             if result is not None:
                 affected_roads.append(result)
 
@@ -241,10 +237,12 @@ class StreetGridImpactCalculator:
                 y=stadium_center.y + end_distance * math.sin(rad),
             )
 
-            new_roads.append({
-                "geometry": [start, end],
-                "road_class": "collector",  # Access roads are typically collectors
-                "name": f"Stadium Access {angle}°",
-            })
+            new_roads.append(
+                {
+                    "geometry": [start, end],
+                    "road_class": "collector",  # Access roads are typically collectors
+                    "name": f"Stadium Access {angle}°",
+                }
+            )
 
         return new_roads

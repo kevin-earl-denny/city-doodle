@@ -52,9 +52,7 @@ def upgrade() -> None:
         # Skip the first (oldest) row, rename the rest
         for idx, row in enumerate(rows[1:], start=2):
             conn.execute(
-                sa.text(
-                    "UPDATE transit_lines SET name = :new_name WHERE id = :id"
-                ),
+                sa.text("UPDATE transit_lines SET name = :new_name WHERE id = :id"),
                 {"new_name": f"{name} ({idx})", "id": row[0]},
             )
 

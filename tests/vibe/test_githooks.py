@@ -178,6 +178,62 @@ def test_pre_push_fails_closed_when_diff_fails(py_repo: Path) -> None:
     assert "git diff failed" in result.stdout
 
 
+def _commit_on_main(repo: Path, rel: str, content: str) -> None:
+    """Commit onto main and move origin/main with it (an already-merged file)."""
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    _git(repo, "add", "--", rel)
+    _git(repo, "commit", "-qm", rel)
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+
+@needs_ruff
+def test_pre_push_lints_files_the_push_did_not_touch(py_repo: Path) -> None:
+    # CITY-651: lint is whole-tree. A lint error already on main, in a file
+    # this push doesn't change, still blocks once any Python file changes.
+    _commit_on_main(py_repo, "lib/legacy.py", "import os\n")
+    good = _commit_off_branch(py_repo, "lib/good.py", "Y = 2\n")
+    result = _push(py_repo, good)
+    assert result.returncode == 1, result.stdout
+    assert "lib/legacy.py" in result.stdout
+    assert "ruff (whole tree: lib)" in result.stdout
+
+
+@needs_ruff
+def test_pre_push_ruff_config_change_relints_the_tree(py_repo: Path) -> None:
+    # Tightening the ruff config touches no .py file but can break any of them.
+    _commit_on_main(py_repo, "lib/legacy.py", "def f(l):\n    return l\n")
+    stricter = _commit_off_branch(
+        py_repo, "pyproject.toml", '[tool.ruff.lint]\nselect = ["F", "E741"]\n'
+    )
+    result = _push(py_repo, stricter)
+    assert result.returncode == 1, result.stdout
+    assert "E741" in result.stdout
+
+
+@needs_ruff
+def test_pre_push_skips_lint_when_no_python_changed(py_repo: Path) -> None:
+    _commit_on_main(py_repo, "lib/legacy.py", "import os\n")
+    docs = _commit_off_branch(py_repo, "docs/notes.md", "notes\n")
+    result = _push(py_repo, docs)
+    assert result.returncode == 0, result.stdout
+    assert "ruff (" not in result.stdout
+
+
+@needs_ruff
+def test_pre_push_warns_when_local_ruff_differs_from_pin(py_repo: Path) -> None:
+    pinned = _commit_off_branch(
+        py_repo,
+        "pyproject.toml",
+        '[project.optional-dependencies]\ndev = ["ruff==0.0.1"]\n\n'
+        '[tool.ruff.lint]\nselect = ["F"]\n',
+    )
+    result = _push(py_repo, pinned)
+    assert result.returncode == 0, result.stdout
+    assert "but CI pins 0.0.1" in result.stdout
+
+
 # ── bin/migrations ────────────────────────────────────────────────────────────
 
 _MIGRATION = 'revision = "{rev}"\ndown_revision = {down}\n'

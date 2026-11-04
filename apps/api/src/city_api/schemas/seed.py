@@ -29,7 +29,9 @@ class ParkMetadata(BaseModel):
     """Metadata specific to park seeds."""
 
     size: ParkSize = Field(default=ParkSize.NEIGHBORHOOD, description="Park size preset")
-    name: str | None = Field(default=None, description="Custom park name (auto-generated if not provided)")
+    name: str | None = Field(
+        default=None, description="Custom park name (auto-generated if not provided)"
+    )
     has_pond: bool = Field(default=False, description="Whether the park has a pond feature")
     has_trails: bool = Field(default=True, description="Whether the park has internal trails")
     connected_road_id: str | None = Field(

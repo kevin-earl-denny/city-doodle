@@ -7,11 +7,11 @@ capacity requirements and available space.
 import math
 import random
 from dataclasses import dataclass
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from city_worker.stadium.types import (
-    Point,
     ParkingLotResult,
+    Point,
     StadiumPlacement,
 )
 
@@ -66,9 +66,7 @@ class ParkingLotGenerator:
     def generate(self) -> list[ParkingLotResult]:
         """Generate all parking lots for the stadium."""
         # Calculate total parking spaces needed
-        total_spaces = int(
-            self.stadium.config.capacity * self.config.spaces_per_seat
-        )
+        total_spaces = int(self.stadium.config.capacity * self.config.spaces_per_seat)
         spaces_per_lot = total_spaces // self.config.lot_count
 
         lots = []
@@ -108,9 +106,7 @@ class ParkingLotGenerator:
 
         # Calculate distance from stadium center
         # Stadium edge distance
-        edge_distance = max(
-            self.stadium.config.width, self.stadium.config.height
-        ) / 2
+        edge_distance = max(self.stadium.config.width, self.stadium.config.height) / 2
 
         min_dist = edge_distance + self.config.min_distance
         max_dist = edge_distance + self.config.max_distance

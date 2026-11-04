@@ -1,12 +1,10 @@
 """Tests for health check endpoints and error handling."""
 
 import pytest
-from starlette.testclient import TestClient
-
-from city_api.main import _add_cors_headers, app
-
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
+from city_api.main import _add_cors_headers
 
 
 @pytest.mark.asyncio
@@ -85,7 +83,10 @@ class TestCorsOnErrorResponses:
         }
         request = Request(scope)
         result = _add_cors_headers(response, request)
-        assert result.headers["Access-Control-Allow-Origin"] == "https://city-doodle-web-abc123-teamname.vercel.app"
+        assert (
+            result.headers["Access-Control-Allow-Origin"]
+            == "https://city-doodle-web-abc123-teamname.vercel.app"
+        )
 
     @pytest.mark.asyncio
     async def test_unhandled_exception_returns_cors_headers(self, client):
@@ -100,4 +101,7 @@ class TestCorsOnErrorResponses:
         )
         # Health endpoint works fine and gets CORS from middleware
         assert response.status_code == 200
-        assert response.headers.get("Access-Control-Allow-Origin") == "https://city-doodle-web.vercel.app"
+        assert (
+            response.headers.get("Access-Control-Allow-Origin")
+            == "https://city-doodle-web.vercel.app"
+        )

@@ -21,6 +21,17 @@ export default tseslint.config(
         "warn",
         { allowConstantExport: true },
       ],
+      // A leading underscore marks an intentionally unused binding (kept for
+      // API compatibility or signature symmetry), as in TS's own convention.
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+          destructuredArrayIgnorePattern: "^_",
+        },
+      ],
     },
   }
 );

@@ -355,7 +355,7 @@ export function TransitView({
       if (!selectedLine || !selectedLineSegments) return;
 
       // If deleting orphans, find which stations will be orphaned
-      let stationIdsToDelete: string[] = [];
+      const stationIdsToDelete: string[] = [];
       if (deleteOrphanedStations) {
         const seg = selectedLineSegments.find((s) => s.id === segmentId);
         if (seg) {

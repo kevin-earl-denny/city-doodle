@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # Each preset is a dict of TerrainConfig field overrides.
 # Omitted fields keep the TerrainConfig defaults.
 

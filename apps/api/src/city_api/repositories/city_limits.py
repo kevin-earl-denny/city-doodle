@@ -19,9 +19,7 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 async def get_by_world(db: AsyncSession, world_id: UUID) -> CityLimits | None:
     """Get the city limits for a world (there's at most one)."""
-    result = await db.execute(
-        select(CityLimitsModel).where(CityLimitsModel.world_id == world_id)
-    )
+    result = await db.execute(select(CityLimitsModel).where(CityLimitsModel.world_id == world_id))
     city_limits = result.scalar_one_or_none()
     if city_limits is None:
         return None
@@ -56,13 +54,9 @@ async def upsert(db: AsyncSession, data: CityLimitsCreate) -> CityLimits:
         return _to_schema(city_limits)
 
 
-async def update(
-    db: AsyncSession, world_id: UUID, data: CityLimitsUpdate
-) -> CityLimits | None:
+async def update(db: AsyncSession, world_id: UUID, data: CityLimitsUpdate) -> CityLimits | None:
     """Update the city limits for a world."""
-    result = await db.execute(
-        select(CityLimitsModel).where(CityLimitsModel.world_id == world_id)
-    )
+    result = await db.execute(select(CityLimitsModel).where(CityLimitsModel.world_id == world_id))
     city_limits = result.scalar_one_or_none()
     if city_limits is None:
         return None
@@ -81,9 +75,7 @@ async def update(
 
 async def delete_by_world(db: AsyncSession, world_id: UUID) -> bool:
     """Delete the city limits for a world."""
-    result = await db.execute(
-        delete(CityLimitsModel).where(CityLimitsModel.world_id == world_id)
-    )
+    result = await db.execute(delete(CityLimitsModel).where(CityLimitsModel.world_id == world_id))
     await db.commit()
     return result.rowcount > 0
 

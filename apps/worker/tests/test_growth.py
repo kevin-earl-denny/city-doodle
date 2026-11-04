@@ -2,12 +2,10 @@
 
 from uuid import uuid4
 
-import pytest
 from city_worker.growth import GrowthChangelog, GrowthConfig
 from city_worker.growth.simulator import (
-    GrowthSimulator,
     TRANSIT_ACCESS_GROWTH_MULTIPLIER,
-    TRANSIT_EXPANSION_BIAS,
+    GrowthSimulator,
     _point_in_ring,
 )
 from city_worker.growth.types import ChangeEntry
@@ -67,12 +65,14 @@ class TestGrowthChangelog:
         wid = uuid4()
         changelog = GrowthChangelog(world_id=wid, years_simulated=5)
         changelog.districts_infilled = 3
-        changelog.entries.append(ChangeEntry(
-            action="infill",
-            entity_type="district",
-            entity_id="abc",
-            details={"old_density": 3.0, "new_density": 3.15},
-        ))
+        changelog.entries.append(
+            ChangeEntry(
+                action="infill",
+                entity_type="district",
+                entity_id="abc",
+                details={"old_density": 3.0, "new_density": 3.15},
+            )
+        )
 
         d = changelog.to_dict()
         assert d["world_id"] == str(wid)
@@ -129,9 +129,7 @@ class TestGrowthSimulator:
     def test_expansion_grows_geometry(self):
         """District geometry expands outward."""
         district = _make_district("downtown", density=5.0)
-        original_coords = [
-            list(p) for p in district["geometry"]["coordinates"][0]
-        ]
+        original_coords = [list(p) for p in district["geometry"]["coordinates"][0]]
 
         config = GrowthConfig(world_id=uuid4(), years=1)
         sim = GrowthSimulator(config, seed=42)
@@ -218,6 +216,7 @@ class TestGrowthSimulator:
 
     def test_deterministic_with_same_seed(self):
         """Same seed produces identical results."""
+
         def run_sim(seed: int) -> dict:
             district = _make_district("residential", density=3.0)
             config = GrowthConfig(world_id=uuid4(), years=3)
@@ -267,33 +266,35 @@ class TestGrowthSimulator:
         config = GrowthConfig(world_id=uuid4(), years=1)
         sim = GrowthSimulator(config, seed=42)
 
-        changelog = sim.simulate([district_a, district_b], [], [], [])
+        sim.simulate([district_a, district_b], [], [], [])
 
         # District A's right-edge points should NOT have entered district B
         a_ring = district_a["geometry"]["coordinates"][0]
-        b_ring = district_b["geometry"]["coordinates"][0]
         for p in a_ring:
-            assert not _point_in_ring(p[0], p[1], [[1000, 0], [2000, 0], [2000, 1000], [1000, 1000], [1000, 0]]), \
-                f"District A vertex {p} entered district B"
+            assert not _point_in_ring(
+                p[0], p[1], [[1000, 0], [2000, 0], [2000, 1000], [1000, 1000], [1000, 0]]
+            ), f"District A vertex {p} entered district B"
 
     def test_expansion_blocked_by_water_region(self):
         """District expansion stops at vertices that would enter water."""
         district = _make_district("residential", density=3.0)
         # Place a lake covering the area above y=1000
-        water_regions = [{
-            "type": "lake",
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [
-                    [[-500, 1000], [1500, 1000], [1500, 3000], [-500, 3000], [-500, 1000]],
-                ],
-            },
-        }]
+        water_regions = [
+            {
+                "type": "lake",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [[-500, 1000], [1500, 1000], [1500, 3000], [-500, 3000], [-500, 1000]],
+                    ],
+                },
+            }
+        ]
 
         config = GrowthConfig(world_id=uuid4(), years=1)
         sim = GrowthSimulator(config, seed=42)
 
-        changelog = sim.simulate([district], [], [], [], water_regions)
+        sim.simulate([district], [], [], [], water_regions)
 
         # Top-edge points should not have expanded into the lake
         ring = district["geometry"]["coordinates"][0]
@@ -322,11 +323,9 @@ class TestGrowthSimulator:
 
         # Inner district had all points constrained, should not count as expanded
         expand_entries = [
-            e for e in changelog.entries
-            if e.action == "expand" and e.entity_id == inner["id"]
+            e for e in changelog.entries if e.action == "expand" and e.entity_id == inner["id"]
         ]
         assert len(expand_entries) == 0
-
 
     def test_transit_access_boosts_infill_rate(self):
         """Districts with transit_access=True grow faster than those without (CITY-429)."""
@@ -389,7 +388,7 @@ class TestGrowthSimulator:
 
         config = GrowthConfig(world_id=uuid4(), years=1)
         sim = GrowthSimulator(config, seed=42)
-        changelog = sim.simulate([district, transit_neighbour], [], [], [])
+        sim.simulate([district, transit_neighbour], [], [], [])
 
         # The right-side vertices (x=1000 originally) should have expanded
         # further than the left-side vertices (x=0 originally) due to transit bias

@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from sqlalchemy.exc import DBAPIError, DataError, IntegrityError, OperationalError
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError, OperationalError
 
 from city_api.config import settings
 from city_api.observability import configure_axiom_logging, redact_sensitive
@@ -140,8 +140,7 @@ async def integrity_error_handler(request: Request, exc: IntegrityError):
     Returns 409 Conflict for constraint violations.
     """
     logger.warning(
-        f"Database integrity error on {request.method} {request.url.path}: "
-        f"{_db_error_summary(exc)}"
+        f"Database integrity error on {request.method} {request.url.path}: {_db_error_summary(exc)}"
     )
     # Extract useful error message from the exception
     error_msg = str(exc.orig) if exc.orig else str(exc)
@@ -186,8 +185,7 @@ async def data_error_handler(request: Request, exc: DataError):
     Returns 400 Bad Request for invalid data.
     """
     logger.warning(
-        f"Database data error on {request.method} {request.url.path}: "
-        f"{_db_error_summary(exc)}"
+        f"Database data error on {request.method} {request.url.path}: {_db_error_summary(exc)}"
     )
     return JSONResponse(
         status_code=400,

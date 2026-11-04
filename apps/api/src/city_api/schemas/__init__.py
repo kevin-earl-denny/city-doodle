@@ -44,6 +44,7 @@ from city_api.schemas.road_network import (
 )
 from city_api.schemas.seed import PlacedSeed, PlacedSeedBulkCreate, PlacedSeedCreate, Position
 from city_api.schemas.stadium import (
+    STADIUM_SIZE_CONFIG,
     ParkingLot,
     ParkingLotConfig,
     Stadium,
@@ -53,7 +54,15 @@ from city_api.schemas.stadium import (
     StadiumType,
     StadiumWithImpact,
     StreetGridImpact,
-    STADIUM_SIZE_CONFIG,
+)
+from city_api.schemas.tile import (
+    TerrainData,
+    Tile,
+    TileCreate,
+    TileFeatures,
+    TileLock,
+    TileLockCreate,
+    TileUpdate,
 )
 from city_api.schemas.transit import (
     LineType,
@@ -73,15 +82,6 @@ from city_api.schemas.transit import (
     TransitStationBulkCreate,
     TransitStationCreate,
     TransitStationUpdate,
-)
-from city_api.schemas.tile import (
-    TerrainData,
-    Tile,
-    TileCreate,
-    TileFeatures,
-    TileLock,
-    TileLockCreate,
-    TileUpdate,
 )
 from city_api.schemas.user import (
     AuthResponse,

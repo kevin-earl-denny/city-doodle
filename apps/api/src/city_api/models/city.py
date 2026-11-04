@@ -6,7 +6,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Uuid, func
-from sqlalchemy.dialects.postgresql import ENUM as PGEnum
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from city_api.database import Base, JSONVariant
@@ -48,7 +48,7 @@ class City(Base):
     # Use PostgreSQL native enum with explicit lowercase values
     # create_type=False since the enum is managed by migrations
     classification: Mapped[str] = mapped_column(
-        PGEnum(
+        PG_ENUM(
             "core",
             "suburb",
             "town",

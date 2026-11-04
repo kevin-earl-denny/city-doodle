@@ -73,17 +73,13 @@ class ParkingLot(BaseModel):
     width: float
     height: float
     capacity: int = Field(..., description="Number of parking spaces")
-    orientation: float = Field(
-        default=0.0, description="Orientation toward stadium in degrees"
-    )
+    orientation: float = Field(default=0.0, description="Orientation toward stadium in degrees")
 
 
 class ParkingLotConfig(BaseModel):
     """Configuration for parking lot generation."""
 
-    lot_count: int = Field(
-        default=4, ge=1, le=8, description="Number of parking lots to generate"
-    )
+    lot_count: int = Field(default=4, ge=1, le=8, description="Number of parking lots to generate")
     min_distance: float = Field(
         default=50.0, description="Minimum distance from stadium edge (meters)"
     )
@@ -99,9 +95,7 @@ class StreetGridImpact(BaseModel):
     """Description of how a stadium impacts the surrounding street grid."""
 
     stadium_id: UUID
-    impact_radius: float = Field(
-        ..., description="Radius of impact in meters from stadium center"
-    )
+    impact_radius: float = Field(..., description="Radius of impact in meters from stadium center")
     orientation_strength: float = Field(
         default=0.8,
         ge=0.0,

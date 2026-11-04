@@ -1,4 +1,6 @@
-# Run Python linting with ruff on PRs and pushes to main
+# Whole-tree lint on PRs and pushes to main (CITY-651): ruff + mypy for Python,
+# eslint for apps/web. Same scope as .githooks/pre-push, so a push the hook
+# lets through doesn't fail here.
 name: Lint
 
 on:
@@ -7,12 +9,20 @@ on:
     paths:
       - '**.py'
       - 'pyproject.toml'
+      - 'apps/web/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/lint.yml'
   pull_request:
     branches: [main]
     paths:
       - '**.py'
       - 'pyproject.toml'
+      - 'apps/web/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/lint.yml'
 
 concurrency:
@@ -29,6 +39,7 @@ jobs:
   lint:
     permissions:
       contents: read
+    name: Python lint (ruff, mypy)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -41,14 +52,39 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Same ruff pin as pyproject.toml's dev extra (tests/vibe/test_lint_config.py).
       - name: Install linting tools
-        run: pip install ruff mypy
+        run: pip install "ruff==0.17.3" mypy
 
       - name: Run ruff check
-        run: ruff check lib/ bin/ --output-format=github
+        run: ruff check apps/api apps/worker lib bin --output-format=github
 
       - name: Run ruff format check
-        run: ruff format lib/ bin/ --check --diff
+        run: ruff format apps/api apps/worker lib bin --check --diff
 
       - name: Run mypy type checking
         run: mypy lib/vibe/
+
+  web:
+    permissions:
+      contents: read
+    name: Web lint (eslint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Errors fail the job; warnings are reported but don't (same as pre-push).
+      - name: eslint (apps/web)
+        run: npm run lint --workspace=apps/web

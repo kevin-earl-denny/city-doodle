@@ -11,7 +11,7 @@ import {
   generateCampusPaths,
   generatePOIsForDistrict,
 } from "./poiAutoGenerator";
-import type { Point } from "./types";
+import type { DistrictType, Point } from "./types";
 
 // Helper: compute polygon centroid
 function centroid(polygon: Point[]): Point {
@@ -209,7 +209,7 @@ describe("generatePOIsForDistrict", () => {
   it("returns empty result for district types with no POI mapping", () => {
     const polygon = makeSquare(0, 0, 10);
     // Cast to bypass type checking for non-mapped district type
-    const result = generatePOIsForDistrict("nonexistent" as any, polygon, "None");
+    const result = generatePOIsForDistrict("nonexistent" as DistrictType, polygon, "None");
     expect(result.pois.length).toBe(0);
     expect(result.campusPaths.length).toBe(0);
   });

@@ -117,7 +117,10 @@ def generate_heightfield(
         logger.warning(
             "height_scale %.4f exceeds the %.4f limit for tile_size=%s "
             "resolution=%s; clamping to avoid aliased terrain",
-            scale, max_frequency, tile_size, resolution,
+            scale,
+            max_frequency,
+            tile_size,
+            resolution,
         )
     frequency = min(scale, max_frequency)
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -471,7 +471,11 @@ def generate_delta_features(
                 wpoly = Polygon(wetland_ring)
                 if not wpoly.is_valid:
                     wpoly = wpoly.buffer(0)
-                if isinstance(wpoly, Polygon) and wpoly.is_valid and wpoly.area > cell_size * cell_size * 0.5:
+                if (
+                    isinstance(wpoly, Polygon)
+                    and wpoly.is_valid
+                    and wpoly.area > cell_size * cell_size * 0.5
+                ):
                     features.append(
                         TerrainFeature(
                             type="wetland",
@@ -510,8 +514,7 @@ def generate_delta_features(
         angles = [0.0]
     else:
         angles = [
-            -max_angle + (2 * max_angle * i / (num_channels - 1))
-            for i in range(num_channels)
+            -max_angle + (2 * max_angle * i / (num_channels - 1)) for i in range(num_channels)
         ]
         # Add slight random jitter to each angle
         angles = [a + (rng.random() * 2 - 1) * math.radians(5) for a in angles]

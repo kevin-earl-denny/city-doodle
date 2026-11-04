@@ -7,8 +7,8 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from city_api.models.district import District as DistrictModel
 from city_api.models.district import DISTRICT_TYPE_DEFAULTS
+from city_api.models.district import District as DistrictModel
 from city_api.repositories import road_network as road_network_repo
 from city_api.schemas import District, DistrictCreate, DistrictUpdate
 
@@ -35,9 +35,7 @@ async def create_district(db: AsyncSession, district_create: DistrictCreate) -> 
     logger.debug(f"Type defaults lookup: type={type_value}, defaults={defaults}")
 
     density = (
-        district_create.density
-        if district_create.density != 1.0
-        else defaults.get("density", 1.0)
+        district_create.density if district_create.density != 1.0 else defaults.get("density", 1.0)
     )
     max_height = (
         district_create.max_height
@@ -180,17 +178,15 @@ async def update_district(
 
 async def delete_district(db: AsyncSession, district_id: UUID) -> bool:
     """Delete a district and clean up associated road edges/nodes (CITY-298)."""
-    edges_deleted, nodes_deleted = await road_network_repo.delete_edges_by_district(
-        db, district_id
-    )
+    edges_deleted, nodes_deleted = await road_network_repo.delete_edges_by_district(db, district_id)
     if edges_deleted or nodes_deleted:
         logger.info(
             "CITY-298: Cleaned up %d edges and %d orphaned nodes for district %s",
-            edges_deleted, nodes_deleted, district_id,
+            edges_deleted,
+            nodes_deleted,
+            district_id,
         )
-    result = await db.execute(
-        delete(DistrictModel).where(DistrictModel.id == district_id)
-    )
+    result = await db.execute(delete(DistrictModel).where(DistrictModel.id == district_id))
     await db.commit()
     return result.rowcount > 0
 
@@ -209,9 +205,7 @@ async def clear_districts(db: AsyncSession, world_id: UUID) -> int:
     for district_id in district_ids:
         await road_network_repo.delete_edges_by_district(db, district_id)
 
-    result = await db.execute(
-        delete(DistrictModel).where(DistrictModel.world_id == world_id)
-    )
+    result = await db.execute(delete(DistrictModel).where(DistrictModel.world_id == world_id))
     await db.commit()
     return result.rowcount
 

@@ -108,7 +108,9 @@ async def update_tile(db: AsyncSession, tile_id: UUID, tile_update: TileUpdate) 
     return _to_schema(tile)
 
 
-async def get_or_create_tile(db: AsyncSession, world_id: UUID, tx: int, ty: int) -> tuple[Tile, bool]:
+async def get_or_create_tile(
+    db: AsyncSession, world_id: UUID, tx: int, ty: int
+) -> tuple[Tile, bool]:
     """Get a tile by coordinates, creating it if it doesn't exist.
 
     Uses an atomic INSERT ... ON CONFLICT DO NOTHING to avoid race conditions
@@ -195,8 +197,6 @@ async def update_terrain_status(
     elif status != "failed":
         # Clear any previous error when status is not failed
         values["terrain_error"] = None
-    await db.execute(
-        update(TileModel).where(TileModel.id == tile_id).values(**values)
-    )
+    await db.execute(update(TileModel).where(TileModel.id == tile_id).values(**values))
     await db.commit()
     logger.info("Updated terrain_status for tile %s to %s", tile_id, status)

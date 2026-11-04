@@ -68,7 +68,7 @@ git config --local core.hooksPath .githooks
 The hooks in `.githooks/`:
 
 - **pre-commit** refuses any `.env` / `.env.*` file except `.env.example`, and runs `gitleaks protect --staged` if gitleaks is installed.
-- **pre-push** runs `ruff check` + `ruff format --check` on changed Python files under `apps/api`, `apps/worker` and `lib`, `eslint` on changed `apps/web` files, and `tsc --noEmit` when anything under `apps/web` or `packages/` changed (deletions included). It checks the pushed commit of each ref (exported to a temp dir), not your working tree. It also warns if the Alembic chain is broken. A missing tool blocks the push (run `npm install`, install ruff). Bypass with `git push --no-verify` only if you've checked another way.
+- **pre-push** runs `ruff check` + `ruff format --check` on the **whole** of `apps/api`, `apps/worker` and `lib` when a Python file there (or the ruff config) changed, `eslint` on the whole `apps/web` project (errors only) and `tsc --noEmit` when anything under `apps/web` or `packages/` changed (deletions included). ruff is pinned in the `dev` extra; a different local version gets a warning. It checks the pushed commit of each ref (exported to a temp dir), not your working tree. It also warns if the Alembic chain is broken. A missing tool blocks the push (run `npm install`, install ruff). Bypass with `git push --no-verify` only if you've checked another way.
 
 `bin/vibe doctor` warns when `core.hooksPath` isn't set.
 

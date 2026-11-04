@@ -636,7 +636,11 @@ class TestDeleteDistrictCleansUpRoads:
         # Create two road nodes
         node1_resp = await client.post(
             f"/worlds/{TEST_WORLD_ID}/road-nodes",
-            json={"world_id": TEST_WORLD_ID, "position": {"x": 10, "y": 10}, "node_type": "intersection"},
+            json={
+                "world_id": TEST_WORLD_ID,
+                "position": {"x": 10, "y": 10},
+                "node_type": "intersection",
+            },
             headers=headers,
         )
         assert node1_resp.status_code == 201
@@ -644,7 +648,11 @@ class TestDeleteDistrictCleansUpRoads:
 
         node2_resp = await client.post(
             f"/worlds/{TEST_WORLD_ID}/road-nodes",
-            json={"world_id": TEST_WORLD_ID, "position": {"x": 50, "y": 50}, "node_type": "intersection"},
+            json={
+                "world_id": TEST_WORLD_ID,
+                "position": {"x": 50, "y": 50},
+                "node_type": "intersection",
+            },
             headers=headers,
         )
         assert node2_resp.status_code == 201

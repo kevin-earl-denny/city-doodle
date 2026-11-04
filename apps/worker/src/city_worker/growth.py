@@ -51,9 +51,7 @@ def _compute_centroid(coordinates: list[list[list[float]]]) -> tuple[float, floa
     return (cx, cy)
 
 
-def _scale_polygon(
-    geometry: dict[str, Any], scale_factor: float
-) -> dict[str, Any]:
+def _scale_polygon(geometry: dict[str, Any], scale_factor: float) -> dict[str, Any]:
     """Scale a GeoJSON Polygon outward from its centroid.
 
     Each vertex is moved away from the centroid by scale_factor.

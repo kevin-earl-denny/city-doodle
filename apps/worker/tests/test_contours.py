@@ -77,11 +77,19 @@ class TestTileSeams:
         left, right = world[:64, :64], world[:64, 64:]
         levels = [0.4, 0.5, 0.6]
         left_f = extract_contours(
-            pad_heightfield_for_contours(left, right=right), 0.0, 0.0, 1.0, levels,
+            pad_heightfield_for_contours(left, right=right),
+            0.0,
+            0.0,
+            1.0,
+            levels,
             simplify_tolerance=0.5,
         )
         right_f = extract_contours(
-            pad_heightfield_for_contours(right), 64.0, 0.0, 1.0, levels,
+            pad_heightfield_for_contours(right),
+            64.0,
+            0.0,
+            1.0,
+            levels,
             simplify_tolerance=0.5,
         )
 
@@ -131,7 +139,9 @@ class TestPipelineContours:
                     continue
                 for x, y in (coords[0], coords[-1]):
                     on_border = x in (x0, x0 + ts) or y in (y0, y0 + ts)
-                    assert on_border, f"dangling contour end at {(x, y)} in tile {tile.tx},{tile.ty}"
+                    assert on_border, (
+                        f"dangling contour end at {(x, y)} in tile {tile.tx},{tile.ty}"
+                    )
                     if 0 < x < 3 * ts and 0 < y < 3 * ts:
                         key = (f.properties["elevation"], x, y)
                         ends[key] = ends.get(key, 0) + 1

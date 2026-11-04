@@ -74,7 +74,7 @@ def _shapely_to_geojson(geom: BaseGeometry) -> dict[str, Any] | None:
 
     if isinstance(geom, MultiLineString):
         # Keep the longest linestring.
-        longest = max(geom.geoms, key=lambda l: l.length)
+        longest = max(geom.geoms, key=lambda line: line.length)
         return _shapely_to_geojson(longest)
 
     if isinstance(geom, GeometryCollection):
@@ -185,7 +185,7 @@ def clip_feature_to_tile(
     # Update length property for linear features.
     if "length" in properties and isinstance(clipped, (LineString, MultiLineString)):
         if isinstance(clipped, MultiLineString):
-            longest = max(clipped.geoms, key=lambda l: l.length)
+            longest = max(clipped.geoms, key=lambda line: line.length)
             properties["length"] = longest.length
         else:
             properties["length"] = clipped.length

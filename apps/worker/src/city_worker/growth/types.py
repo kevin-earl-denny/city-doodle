@@ -13,17 +13,19 @@ class GrowthConfig:
     years: int = 1
 
     # Growth rate multipliers per district type (annual %)
-    infill_rates: dict[str, float] = field(default_factory=lambda: {
-        "residential": 0.03,
-        "downtown": 0.05,
-        "commercial": 0.04,
-        "industrial": 0.02,
-        "hospital": 0.01,
-        "university": 0.02,
-        "k12": 0.01,
-        "park": 0.005,
-        "airport": 0.005,
-    })
+    infill_rates: dict[str, float] = field(
+        default_factory=lambda: {
+            "residential": 0.03,
+            "downtown": 0.05,
+            "commercial": 0.04,
+            "industrial": 0.02,
+            "hospital": 0.01,
+            "university": 0.02,
+            "k12": 0.01,
+            "park": 0.005,
+            "airport": 0.005,
+        }
+    )
 
     # Expansion rate: fraction of current area added per year
     expansion_rate: float = 0.02
@@ -32,17 +34,19 @@ class GrowthConfig:
     poi_density_threshold: float = 4.0
 
     # Maximum density cap by district type
-    max_density: dict[str, float] = field(default_factory=lambda: {
-        "residential": 8.0,
-        "downtown": 10.0,
-        "commercial": 8.0,
-        "industrial": 4.0,
-        "hospital": 4.0,
-        "university": 5.0,
-        "k12": 3.0,
-        "park": 0.5,
-        "airport": 1.0,
-    })
+    max_density: dict[str, float] = field(
+        default_factory=lambda: {
+            "residential": 8.0,
+            "downtown": 10.0,
+            "commercial": 8.0,
+            "industrial": 4.0,
+            "hospital": 4.0,
+            "university": 5.0,
+            "k12": 3.0,
+            "park": 0.5,
+            "airport": 1.0,
+        }
+    )
 
 
 @dataclass

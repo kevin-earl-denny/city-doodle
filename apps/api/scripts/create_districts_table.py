@@ -25,7 +25,8 @@ def main():
 
     with engine.connect() as conn:
         # Create district_type enum if it doesn't exist - matches frontend types
-        conn.execute(text("""
+        conn.execute(
+            text("""
             DO $$ BEGIN
                 CREATE TYPE district_type AS ENUM (
                     'residential',
@@ -41,11 +42,13 @@ def main():
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$;
-        """))
+        """)
+        )
         print("district_type enum ready")
 
         # Create districts table
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS districts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
@@ -59,10 +62,15 @@ def main():
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
             )
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_districts_world_id ON districts(world_id)"))
+        """)
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_districts_world_id ON districts(world_id)")
+        )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_districts_type ON districts(type)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_districts_historic ON districts(historic)"))
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_districts_historic ON districts(historic)")
+        )
         conn.commit()
         print("Districts table created successfully")
 

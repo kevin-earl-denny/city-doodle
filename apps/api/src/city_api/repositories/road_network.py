@@ -145,9 +145,7 @@ async def update_node(
 
 async def delete_node(db: AsyncSession, node_id: UUID) -> bool:
     """Delete a road node. Connected edges are deleted via CASCADE."""
-    result = await db.execute(
-        delete(RoadNodeModel).where(RoadNodeModel.id == node_id)
-    )
+    result = await db.execute(delete(RoadNodeModel).where(RoadNodeModel.id == node_id))
     await db.commit()
     return result.rowcount > 0
 
@@ -266,9 +264,7 @@ async def update_edge(
 
 async def delete_edge(db: AsyncSession, edge_id: UUID) -> bool:
     """Delete a road edge."""
-    result = await db.execute(
-        delete(RoadEdgeModel).where(RoadEdgeModel.id == edge_id)
-    )
+    result = await db.execute(delete(RoadEdgeModel).where(RoadEdgeModel.id == edge_id))
     await db.commit()
     return result.rowcount > 0
 
@@ -362,24 +358,19 @@ async def delete_edges_by_district(db: AsyncSession, district_id: UUID) -> tuple
         candidate_node_ids.add(row[1])
 
     # Delete the edges
-    result = await db.execute(
-        delete(RoadEdgeModel).where(RoadEdgeModel.district_id == district_id)
-    )
+    result = await db.execute(delete(RoadEdgeModel).where(RoadEdgeModel.district_id == district_id))
     edges_deleted = result.rowcount
 
     # Delete orphaned nodes (nodes with no remaining edges)
     nodes_deleted = 0
     for node_id in candidate_node_ids:
         remaining = await db.execute(
-            select(RoadEdgeModel.id).where(
-                (RoadEdgeModel.from_node_id == node_id)
-                | (RoadEdgeModel.to_node_id == node_id)
-            ).limit(1)
+            select(RoadEdgeModel.id)
+            .where((RoadEdgeModel.from_node_id == node_id) | (RoadEdgeModel.to_node_id == node_id))
+            .limit(1)
         )
         if remaining.first() is None:
-            await db.execute(
-                delete(RoadNodeModel).where(RoadNodeModel.id == node_id)
-            )
+            await db.execute(delete(RoadNodeModel).where(RoadNodeModel.id == node_id))
             nodes_deleted += 1
 
     return edges_deleted, nodes_deleted
@@ -390,9 +381,7 @@ async def clear_road_network(db: AsyncSession, world_id: UUID) -> int:
 
     Edges are deleted via CASCADE when nodes are deleted.
     """
-    result = await db.execute(
-        delete(RoadNodeModel).where(RoadNodeModel.world_id == world_id)
-    )
+    result = await db.execute(delete(RoadNodeModel).where(RoadNodeModel.world_id == world_id))
     await db.commit()
     return result.rowcount
 

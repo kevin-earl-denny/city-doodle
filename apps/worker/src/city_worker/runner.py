@@ -93,7 +93,7 @@ class JobRunner:
         if self._consecutive_empty_polls == 0:
             return settings.poll_interval_seconds
         base = settings.poll_interval_seconds
-        interval = base * (2 ** self._consecutive_empty_polls)
+        interval = base * (2**self._consecutive_empty_polls)
         return min(interval, settings.max_poll_interval_seconds)
 
     # ------------------------------------------------------------------
@@ -175,8 +175,10 @@ class JobRunner:
                         timeout=settings.listen_timeout_seconds,
                     )
                     logger.debug("Woke up via NOTIFY")
-                except asyncio.TimeoutError:
-                    logger.debug("Fallback poll (no notification in %.0fs)", settings.listen_timeout_seconds)
+                except TimeoutError:
+                    logger.debug(
+                        "Fallback poll (no notification in %.0fs)", settings.listen_timeout_seconds
+                    )
 
                 # Drain all available jobs (there may be more than one)
                 while not self._shutdown:
@@ -416,9 +418,7 @@ class JobRunner:
             reset_log_context(log_token)
 
     async def _execute_job_logged(self, job_id: UUID, job_type: str, params: dict) -> None:
-        logger.info(
-            "Executing job %s (type: %s)", job_id, job_type, extra={"event": "job_started"}
-        )
+        logger.info("Executing job %s (type: %s)", job_id, job_type, extra={"event": "job_started"})
         result: dict[str, Any] | None = None
         error: str | None = None
         start = time.monotonic()
@@ -550,9 +550,7 @@ class JobRunner:
         finally:
             await session.close()
 
-    async def _retry_job(
-        self, job_id: UUID, retry_count: int, error: str
-    ) -> None:
+    async def _retry_job(self, job_id: UUID, retry_count: int, error: str) -> None:
         """Re-queue a failed job for retry with exponential backoff.
 
         Increments retry_count, sets status back to PENDING, and schedules
@@ -610,7 +608,7 @@ class JobRunner:
         session = await get_session()
         try:
             async with session.begin():
-                values = f"terrain_status = :status"
+                values = "terrain_status = :status"
                 if error is not None:
                     values += ", terrain_error = :error"
                 elif status != "failed":
@@ -625,7 +623,10 @@ class JobRunner:
                 )
             logger.info(
                 "[Terrain] Updated terrain_status=%s for world=%s tx=%s ty=%s",
-                status, world_id, tx, ty,
+                status,
+                world_id,
+                tx,
+                ty,
             )
         finally:
             await session.close()
@@ -653,11 +654,19 @@ class JobRunner:
                             SET {values}
                             WHERE world_id = :world_id AND tx = :tx AND ty = :ty
                         """),
-                        {"status": status, "error": error, "world_id": world_id, "tx": tx, "ty": ty},
+                        {
+                            "status": status,
+                            "error": error,
+                            "world_id": world_id,
+                            "tx": tx,
+                            "ty": ty,
+                        },
                     )
             logger.info(
                 "[Terrain] Bulk updated terrain_status=%s for world=%s (%d tiles)",
-                status, world_id, len(tile_coords),
+                status,
+                world_id,
+                len(tile_coords),
             )
         finally:
             await session.close()
@@ -694,7 +703,9 @@ class JobRunner:
         world_id = UUID(world_id) if isinstance(world_id, str) else world_id
 
         # CITY-585: Mark center tile as "generating"
-        await self._update_tile_terrain_status(world_id, int(center_tx), int(center_ty), "generating")
+        await self._update_tile_terrain_status(
+            world_id, int(center_tx), int(center_ty), "generating"
+        )
 
         # CITY-626: Report initial progress (0/9)
         await self._update_job_progress(job_id, 0, 9)
@@ -708,7 +719,10 @@ class JobRunner:
             geographic_setting = world_settings.get("geographic_setting", "coastal")
             logger.info(
                 "[Terrain trace=%s] Job picked up: world=%s setting=%s seed=%s",
-                trace_id, world_id, geographic_setting, world_seed,
+                trace_id,
+                world_id,
+                geographic_setting,
+                world_seed,
             )
             config_kwargs = apply_seed_variation(geographic_setting, seed=int(world_seed))
             config_kwargs["world_seed"] = int(world_seed)
@@ -739,7 +753,12 @@ class JobRunner:
             total_s = t_save_end - t_pipeline_start
             logger.info(
                 "[Terrain trace=%s] Full pipeline complete in %.1fs (generation=%.1fs save=%.1fs) world=%s setting=%s",
-                trace_id, total_s, gen_s, save_s, world_id, geographic_setting,
+                trace_id,
+                total_s,
+                gen_s,
+                save_s,
+                world_id,
+                geographic_setting,
             )
 
             # CITY-585: Mark all generated tiles as "ready"
@@ -793,10 +812,17 @@ class JobRunner:
                     features_dict = tile_data.features_to_geojson()
 
                     fc_type = features_dict.get("type") if isinstance(features_dict, dict) else None
-                    fc_count = len(features_dict.get("features", [])) if isinstance(features_dict, dict) and fc_type == "FeatureCollection" else 0
+                    fc_count = (
+                        len(features_dict.get("features", []))
+                        if isinstance(features_dict, dict) and fc_type == "FeatureCollection"
+                        else 0
+                    )
                     logger.info(
                         "[Terrain trace=%s] Saving tile tx=%s ty=%s feature_count=%d",
-                        trace_id, tile_data.tx, tile_data.ty, fc_count,
+                        trace_id,
+                        tile_data.tx,
+                        tile_data.ty,
+                        fc_count,
                     )
 
                     # CITY-612: Serialize dicts to JSON strings for JSONB columns.
@@ -830,7 +856,9 @@ class JobRunner:
 
                 logger.info(
                     "[Terrain trace=%s] Saved %d terrain tiles for world %s",
-                    trace_id, total, world_id,
+                    trace_id,
+                    total,
+                    world_id,
                 )
 
             # CITY-626: Report progress after the transaction commits
@@ -870,9 +898,7 @@ class JobRunner:
         years = max(1, min(int(years), 10))
 
         # Fetch current world state from DB
-        districts, road_nodes, road_edges, pois, world_seed = (
-            await self._load_world_state(world_id)
-        )
+        districts, road_nodes, road_edges, pois, world_seed = await self._load_world_state(world_id)
 
         if not districts:
             return {
@@ -891,13 +917,22 @@ class JobRunner:
         config = GrowthConfig(world_id=world_id, years=years)
         simulator = GrowthSimulator(config, seed=world_seed)
         changelog = simulator.simulate(
-            districts, road_nodes, road_edges, pois, water_regions,
+            districts,
+            road_nodes,
+            road_edges,
+            pois,
+            water_regions,
             transit_stations,
         )
 
         # Persist changes back to DB
         await self._save_growth_results(
-            world_id, districts, road_nodes, road_edges, pois, changelog,
+            world_id,
+            districts,
+            road_nodes,
+            road_edges,
+            pois,
+            changelog,
         )
 
         result = changelog.to_dict()
@@ -905,7 +940,8 @@ class JobRunner:
         return result
 
     async def _load_world_state(
-        self, world_id: UUID,
+        self,
+        world_id: UUID,
     ) -> tuple[list[dict], list[dict], list[dict], list[dict], int]:
         """Load districts, road nodes, road edges, POIs, and world seed."""
         session = await get_session()
@@ -929,9 +965,15 @@ class JobRunner:
             )
             districts = [
                 {
-                    "id": str(r[0]), "world_id": str(r[1]), "type": r[2],
-                    "name": r[3], "geometry": r[4], "density": float(r[5]),
-                    "max_height": r[6], "transit_access": r[7], "historic": r[8],
+                    "id": str(r[0]),
+                    "world_id": str(r[1]),
+                    "type": r[2],
+                    "name": r[3],
+                    "geometry": r[4],
+                    "density": float(r[5]),
+                    "max_height": r[6],
+                    "transit_access": r[7],
+                    "historic": r[8],
                 }
                 for r in result.fetchall()
             ]
@@ -946,8 +988,11 @@ class JobRunner:
             )
             road_nodes = [
                 {
-                    "id": str(r[0]), "world_id": str(r[1]),
-                    "position": r[2], "node_type": r[3], "name": r[4],
+                    "id": str(r[0]),
+                    "world_id": str(r[1]),
+                    "position": r[2],
+                    "node_type": r[3],
+                    "name": r[4],
                 }
                 for r in result.fetchall()
             ]
@@ -964,12 +1009,17 @@ class JobRunner:
             )
             road_edges = [
                 {
-                    "id": str(r[0]), "world_id": str(r[1]),
-                    "from_node_id": str(r[2]), "to_node_id": str(r[3]),
-                    "road_class": r[4], "geometry": r[5],
+                    "id": str(r[0]),
+                    "world_id": str(r[1]),
+                    "from_node_id": str(r[2]),
+                    "to_node_id": str(r[3]),
+                    "road_class": r[4],
+                    "geometry": r[5],
                     "length_meters": float(r[6]) if r[6] else 0,
-                    "speed_limit": r[7], "name": r[8],
-                    "is_one_way": r[9], "lanes": r[10],
+                    "speed_limit": r[7],
+                    "name": r[8],
+                    "is_one_way": r[9],
+                    "lanes": r[10],
                     "district_id": str(r[11]) if r[11] else None,
                 }
                 for r in result.fetchall()
@@ -985,9 +1035,12 @@ class JobRunner:
             )
             pois = [
                 {
-                    "id": str(r[0]), "world_id": str(r[1]),
-                    "type": r[2], "name": r[3],
-                    "position_x": float(r[4]), "position_y": float(r[5]),
+                    "id": str(r[0]),
+                    "world_id": str(r[1]),
+                    "type": r[2],
+                    "name": r[3],
+                    "position_x": float(r[4]),
+                    "position_y": float(r[5]),
                 }
                 for r in result.fetchall()
             ]

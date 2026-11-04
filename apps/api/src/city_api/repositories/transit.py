@@ -124,7 +124,9 @@ async def update_station(
     if station_update.district_id is not None:
         station.district_id = station_update.district_id
     if station_update.station_type is not None:
-        station.station_type = station_update.station_type.value  # Pass string value for PostgreSQL enum
+        station.station_type = (
+            station_update.station_type.value
+        )  # Pass string value for PostgreSQL enum
     if station_update.name is not None:
         station.name = station_update.name
     if station_update.position_x is not None:
@@ -187,19 +189,17 @@ async def create_line(db: AsyncSession, line_create: TransitLineCreate) -> Trans
     return _line_to_schema(line)
 
 
-async def create_lines_bulk(
-    db: AsyncSession, lines: list[TransitLineCreate]
-) -> list[TransitLine]:
+async def create_lines_bulk(db: AsyncSession, lines: list[TransitLineCreate]) -> list[TransitLine]:
     """Create multiple lines at once."""
     models = [
         TransitLineModel(
-            world_id=l.world_id,
-            line_type=l.line_type.value,  # Pass string value for PostgreSQL enum
-            name=l.name,
-            color=l.color,
-            is_auto_generated=l.is_auto_generated,
+            world_id=line.world_id,
+            line_type=line.line_type.value,  # Pass string value for PostgreSQL enum
+            name=line.name,
+            color=line.color,
+            is_auto_generated=line.is_auto_generated,
         )
-        for l in lines
+        for line in lines
     ]
     db.add_all(models)
     await db.commit()
@@ -223,9 +223,7 @@ async def get_line_model(db: AsyncSession, line_id: UUID) -> TransitLineModel | 
     return result.scalar_one_or_none()
 
 
-async def get_line_with_segments(
-    db: AsyncSession, line_id: UUID
-) -> TransitLineWithSegments | None:
+async def get_line_with_segments(db: AsyncSession, line_id: UUID) -> TransitLineWithSegments | None:
     """Get a transit line with all its segments."""
     result = await db.execute(
         select(TransitLineModel)
@@ -247,7 +245,7 @@ async def list_lines_by_world(
         query = query.where(TransitLineModel.line_type == line_type)
     result = await db.execute(query)
     lines = result.scalars().all()
-    return [_line_to_schema(l) for l in lines]
+    return [_line_to_schema(line) for line in lines]
 
 
 async def list_lines_with_segments_by_world(
@@ -260,7 +258,7 @@ async def list_lines_with_segments_by_world(
         .options(selectinload(TransitLineModel.segments))
     )
     lines = result.scalars().all()
-    return [_line_with_segments_to_schema(l) for l in lines]
+    return [_line_with_segments_to_schema(line) for line in lines]
 
 
 async def update_line(
@@ -288,9 +286,7 @@ async def update_line(
 
 async def delete_line(db: AsyncSession, line_id: UUID) -> bool:
     """Delete a transit line. Segments are deleted via CASCADE."""
-    result = await db.execute(
-        delete(TransitLineModel).where(TransitLineModel.id == line_id)
-    )
+    result = await db.execute(delete(TransitLineModel).where(TransitLineModel.id == line_id))
     await db.commit()
     return result.rowcount > 0
 
@@ -408,9 +404,7 @@ async def delete_segment(db: AsyncSession, segment_id: UUID) -> bool:
     """
     # Look up the parent line before deleting the segment
     seg_result = await db.execute(
-        select(TransitLineSegmentModel.line_id).where(
-            TransitLineSegmentModel.id == segment_id
-        )
+        select(TransitLineSegmentModel.line_id).where(TransitLineSegmentModel.id == segment_id)
     )
     row = seg_result.one_or_none()
     parent_line_id = row[0] if row else None
@@ -445,14 +439,10 @@ async def _delete_orphaned_lines(db: AsyncSession, line_ids: list[UUID]) -> int:
     deleted = 0
     for line_id in line_ids:
         count_result = await db.execute(
-            select(TransitLineSegmentModel.id).where(
-                TransitLineSegmentModel.line_id == line_id
-            )
+            select(TransitLineSegmentModel.id).where(TransitLineSegmentModel.line_id == line_id)
         )
         if len(count_result.all()) == 0:
-            await db.execute(
-                delete(TransitLineModel).where(TransitLineModel.id == line_id)
-            )
+            await db.execute(delete(TransitLineModel).where(TransitLineModel.id == line_id))
             deleted += 1
     return deleted
 
