@@ -562,15 +562,16 @@ export function useJobPolling(jobId: string | null) {
  * CITY-626: Poll the terrain generation job for a world's center tile
  * to get incremental progress data ({completed, total}).
  *
- * Finds the most recent terrain_generation job for the center tile (tx=0, ty=0)
- * and polls it every 2s while it's running.
+ * Finds the most recent terrain_generation job for the center tile (tx=1, ty=1)
+ * and polls it every 2s while it's running. CITY-630 moved the grid center to
+ * (1,1); EditLockContext creates that tile, so it owns the terrain job.
  */
 export function useTerrainJobProgress(
   tiles: Tile[] | undefined,
   isTerrainLoading: boolean,
 ) {
-  // Find the center tile (tx=0, ty=0) to look up its terrain job
-  const centerTile = tiles?.find((t) => t.tx === 0 && t.ty === 0);
+  // Find the center tile (tx=1, ty=1) to look up its terrain job
+  const centerTile = tiles?.find((t) => t.tx === 1 && t.ty === 1);
   const centerTileId = centerTile?.id;
 
   // Fetch jobs for the center tile while terrain is loading
