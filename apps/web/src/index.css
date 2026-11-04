@@ -1,6 +1,98 @@
 @import "tailwindcss";
 
 /*
+ * Survey-map palette and type for the "Found a city" flow (CITY-658).
+ * Use as Tailwind utilities, e.g. bg-paper, text-ink, border-contour, font-display.
+ */
+@theme {
+  --color-paper: #faf8f3;
+  --color-ink: #1c2541;
+  --color-ink-soft: #2b3350;
+  --color-water: #89cff0;
+  --color-river: #6bb3c9;
+  --color-coast: #4a90a4;
+  --color-deep-water: #2e6e80;
+  --color-contour: #c9b896;
+  --color-sand: #e8dfc8;
+  --color-parchment: #f3efe4;
+  --color-parchment-dim: #efe9da;
+  --color-parchment-footer: #f5f1e6;
+  --color-card-edge: #e2d9c3;
+  --color-pencil: #a79e85;
+  --color-muted: #7a7461;
+  --color-body: #6b6552;
+  /* Map-illustration accents */
+  --color-beach: #f5e6c8;
+  --color-lake: #a7d8de;
+  --color-grid-line: #e6ddc8;
+  --color-survey-line: #d9cdb0;
+  --color-grove: #b7c9a0;
+  --color-marsh: #7fa88e;
+
+  --font-display: "Fraunces", Georgia, serif;
+  --font-ui: "Inter", system-ui, sans-serif;
+  --font-plex: "IBM Plex Mono", ui-monospace, monospace;
+  --font-hand: "Caveat", cursive;
+
+  --animate-step-in: step-in 150ms ease-out;
+
+  @keyframes step-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* Map scale-bar range input (ScaleBarSlider): hide the native track, draw a round blue thumb. */
+.scale-bar-range {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.scale-bar-range::-webkit-slider-runnable-track {
+  background: transparent;
+  height: 16px;
+}
+.scale-bar-range::-moz-range-track {
+  background: transparent;
+  height: 16px;
+}
+.scale-bar-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--color-water);
+  border: 2px solid var(--color-ink);
+  box-sizing: border-box;
+}
+.scale-bar-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--color-water);
+  border: 2px solid var(--color-ink);
+  box-sizing: border-box;
+}
+.scale-bar-range:focus {
+  outline: none;
+}
+.scale-bar-range:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--color-coast);
+  outline-offset: 2px;
+}
+.scale-bar-range:focus-visible::-moz-range-thumb {
+  outline: 2px solid var(--color-coast);
+  outline-offset: 2px;
+}
+
+/*
  * Handwritten font for map labels
  *
  * Font: Caveat (https://fonts.google.com/specimen/Caveat)
