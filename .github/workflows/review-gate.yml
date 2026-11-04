@@ -1,0 +1,79 @@
+# Required `review-gate` commit status: the merge bar (CITY-637).
+# Rules: lib/vibe/review_gate.py. Mergeable when CodeRabbit APPROVED the current
+# head, or 2+ distinct non-author agent reviews (pass/minor) are on the head;
+# any major on the head blocks it.
+#
+# Never grades a PR with the PR's own code. Every trigger here runs the
+# workflow and script from the BASE side:
+#   pull_request_target  workflow + checkout from the PR's base branch
+#   issue_comment        default branch (rebase-carry markers live in comments)
+#   workflow_run         default branch; relays pull_request_review events from
+#                        review-gate-trigger.yml, which has no permissions
+# The PR's commits are only fetched as git objects, to verify rebase carries
+# (patch-id); nothing from the PR is executed. Don't add a step that checks out
+# or runs the PR head here. Because the base branch's copy runs, a change to
+# this file or scripts/review_gate.py only takes effect once it is merged.
+#
+# The result is a commit STATUS named `review-gate` on the PR's current head
+# (pending first, error on any failure), not this job's check run, because
+# issue_comment and workflow_run runs aren't attached to the PR head. The job
+# goes red only when evaluating errors; the verdict is the status.
+#
+# Python: the runner's system python3, stdlib only (nothing is installed).
+# Secrets: none. Only the workflow's GITHUB_TOKEN, scoped below.
+# Residual risk (accepted, honor system): a commit status is only as
+# trustworthy as whoever can write one. A same-repo PR can add or edit ANY
+# workflow (this relay included) to get `statuses: write` and post a fake
+# `review-gate` success, and anyone holding kdenny's token (every agent) can
+# post one directly. Pinning the required check's source to the GitHub Actions
+# app in branch protection (CITY-638) blocks the token path, not the workflow
+# path. Only a dedicated GitHub App as the sole status writer closes both. The
+# gate stops honest mistakes, not a determined bypass.
+name: Review gate
+
+on:
+  pull_request_target:
+    # Any base: stacked PRs get a status too (only main requires it).
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_run:
+    workflows: ["Review gate trigger"]
+    types: [completed]
+
+concurrency:
+  # One queue per PR for every trigger (so runs never overlap); queue, don't
+  # cancel. The script also re-reads the PR before writing, so a run never
+  # posts a verdict older than the data it last saw.
+  group: review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  statuses: write
+
+jobs:
+  evaluate:
+    name: review-gate (evaluate)
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Default ref: the base branch (pull_request_target) or the default branch.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Evaluate the merge bar and set the review-gate status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then
+            python3 scripts/review_gate.py --pr "$PR_NUMBER" --set-status ${HEAD_SHA:+--head-hint "$HEAD_SHA"}
+          else
+            python3 scripts/review_gate.py --sha "$HEAD_SHA" --set-status
+          fi

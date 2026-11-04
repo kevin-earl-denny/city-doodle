@@ -694,12 +694,30 @@ def _warn_duplicate_prs(ticket_id: str, branch: str, *, skip_confirmation: bool 
 @click.option("--title", "-t", help="PR title (default: branch name or branch + first commit line)")
 @click.option("--body", "-b", help="PR body (default: use template)")
 @click.option("--web", is_flag=True, help="Open PR form in the browser")
-def pr(title: str | None, body: str | None, web: bool) -> None:
-    """Open a pull request for the current branch (run from your worktree when done)."""
+@click.option(
+    "--author",
+    help="Authoring session id for the review-gate author marker "
+    "(default: $CLAUDE_SESSION_NAME, else a generated id)",
+)
+def pr(title: str | None, body: str | None, web: bool, author: str | None) -> None:
+    """Open a pull request for the current branch (run from your worktree when done).
+
+    The body always ends with <!-- city-author session=<id> --> (unless it already
+    has one): the review-gate never counts reviews by that session or its subagents.
+    """
     import subprocess
+    import uuid
 
     from lib.vibe.config import load_config
     from lib.vibe.git.branches import current_branch, get_main_branch
+    from lib.vibe.review_gate import author_ids
+
+    author = author or os.environ.get("CLAUDE_SESSION_NAME") or f"pr-{uuid.uuid4().hex[:8]}"
+    try:
+        _with_author_marker("", author)
+    except ValueError as e:
+        click.echo(f"Invalid --author: {e}", err=True)
+        sys.exit(1)
 
     main_branch = get_main_branch()
     branch = current_branch()
@@ -724,13 +742,13 @@ def pr(title: str | None, body: str | None, web: bool) -> None:
     else:
         derived_title = _derive_pr_title(branch, config)
         args.extend(["--title", derived_title])
-    if body:
-        args.extend(["--body", body])
-    else:
+    if not body:
         # Use PR template if it exists
         template = Path(".github/PULL_REQUEST_TEMPLATE.md")
-        if template.exists():
-            args.extend(["--body-file", str(template)])
+        body = template.read_text() if template.exists() else ""
+    body = _with_author_marker(body, author)
+    args.extend(["--body", body])
+    click.echo(f"Author marker: session={', '.join(author_ids(body))}")
     if web:
         args.append("--web")
 
@@ -753,6 +771,64 @@ def pr(title: str | None, body: str | None, web: bool) -> None:
         click.echo("gh CLI not found. Install it: https://cli.github.com/")
         click.echo("Then run: gh pr create")
         sys.exit(1)
+
+
+def _with_author_marker(body: str, author: str) -> str:
+    """Append the review-gate author marker unless the body already has one (CITY-637)."""
+    from lib.vibe.review_gate import author_ids, author_marker
+
+    marker = author_marker(author)  # ValueError on a malformed id
+    if author_ids(body):
+        return body
+    return f"{body.rstrip()}\n\n{marker}\n"
+
+
+@main.command("review-marker")
+@click.option("--reviewer", required=True, help="Reviewing session id, never the PR author's")
+@click.option(
+    "--verdict",
+    required=True,
+    type=click.Choice(["pass", "minor", "major"]),
+    help="pass = no findings, minor = minors/nits only, major = at least one major",
+)
+@click.option("--head", help="Reviewed SHA (default: the PR's head with --pr, else HEAD)")
+@click.option("--pr", "pr_number", type=int, help="Read the head SHA from this PR")
+def review_marker(reviewer: str, verdict: str, head: str | None, pr_number: int | None) -> None:
+    """Print the city-agent-review marker: the exact last line of an agent review (CITY-637).
+
+    It must be the only mention of the marker keyword in the review; quoting one
+    anywhere else makes the review invalid, and an invalid review blocks the head.
+    """
+    from lib.vibe.review_gate import agent_marker
+
+    if not head:
+        cmd = (
+            ["gh", "pr", "view", str(pr_number), "--json", "headRefOid", "-q", ".headRefOid"]
+            if pr_number
+            else ["git", "rev-parse", "HEAD"]
+        )
+        try:
+            head = _subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
+        except (OSError, _subprocess.CalledProcessError) as e:
+            click.echo(f"Couldn't resolve the head SHA ({' '.join(cmd)}): {e}", err=True)
+            sys.exit(1)
+    try:
+        click.echo(agent_marker(reviewer, head, verdict))
+    except ValueError as e:
+        click.echo(f"Invalid marker: {e}", err=True)
+        sys.exit(1)
+
+
+@main.command("review-gate")
+@click.argument("pr_number", type=int)
+@click.option("--repo", help="owner/name (default: the origin remote)")
+@click.option("--json", "as_json", is_flag=True, help="Print the result as JSON")
+def review_gate_cmd(pr_number: int, repo: str | None, as_json: bool) -> None:
+    """Dry-run the review-gate merge bar for a PR (exit 0 pass, 1 fail, 2 API error)."""
+    from scripts.review_gate import main as gate_main
+
+    args = ["--pr", str(pr_number)] + (["--repo", repo] if repo else [])
+    sys.exit(gate_main(args + (["--json"] if as_json else [])))
 
 
 def _autolink_pr_to_ticket(branch: str, pr_url: str, config: dict) -> None:

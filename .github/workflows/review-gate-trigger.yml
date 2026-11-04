@@ -1,0 +1,21 @@
+# Relay for review-gate.yml (CITY-637). There's no pull_request_review_target,
+# and a pull_request_review run uses the PR's own workflow files, so this
+# workflow does nothing but finish. Its `workflow_run` completion re-runs the
+# gate from the default branch. No permissions, no checkout, no PR code.
+name: Review gate trigger
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions: {}
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Hand off to review-gate
+        env:
+          ACTION: ${{ github.event.action }}
+        run: echo "Review $ACTION; review-gate re-evaluates this PR's head via workflow_run."
