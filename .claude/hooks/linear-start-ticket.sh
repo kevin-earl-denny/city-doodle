@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Linear status update hook - marks ticket as In Progress when starting work
 # Triggers when user prompt contains a ticket ID pattern (e.g., PROJ-123)
 #
@@ -8,10 +8,17 @@
 
 set -e
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
 # Source .env.local if LINEAR_API_KEY not already set
-if [ -z "$LINEAR_API_KEY" ] && [ -f ".env.local" ]; then
-  export $(grep -E '^LINEAR_API_KEY=' .env.local 2>/dev/null | xargs) || true
-fi
+# Worktrees have no .env.local; fall back to the main checkout's.
+MAIN_ROOT="$(dirname "$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
+for ENV_FILE in "$REPO_ROOT/.env.local" "$MAIN_ROOT/.env.local"; do
+  if [ -z "$LINEAR_API_KEY" ] && [ -f "$ENV_FILE" ]; then
+    LINEAR_API_KEY=$(grep -E '^LINEAR_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
+  fi
+done
+export LINEAR_API_KEY
 
 # Check for API key - exit silently if not configured
 if [ -z "$LINEAR_API_KEY" ]; then

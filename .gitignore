@@ -1,18 +1,19 @@
 # Vibe-specific
-.vibe/config.json
 .vibe/local_state.json
 .vibe/.venv/
 .vibe/cache/
 
 # Claude Code local settings (may contain permissions)
 .claude/settings.local.json
+.claude/worktrees/
+CLAUDE.local.md
 
 # Environment files
 .env
 .env.local
-.env.*.local
+.env.*
 !.env.example
-.envrc
+.envrc.local
 .direnv/
 
 # Python

@@ -6,18 +6,21 @@
   },
   "project": {
     "name": "City Doodle",
-    "repository": "kdenny/city-doodle"
+    "repository": "kevin-earl-denny/city-doodle"
   },
   "tracker": {
     "type": "linear",
     "config": {
       "team_id": "48a87c3c-6f07-4af2-b5aa-4e100919ba26",
-      "workspace": "2wrist"
+      "workspace": "2wrist",
+      "team_key": "CITY",
+      "github_integration": "native",
+      "deployed_state": "Deployed"
     }
   },
   "github": {
     "auth_method": "gh_cli",
-    "owner": "kdenny",
+    "owner": "kevin-earl-denny",
     "repo": "city-doodle"
   },
   "branching": {
@@ -34,23 +37,26 @@
     "type": [
       "Bug",
       "Feature",
-      "Chore",
+      "Improvement",
+      "chore",
       "Refactor"
     ],
-    "risk": [
-      "Low Risk",
-      "Medium Risk",
-      "High Risk"
-    ],
     "area": [
-      "Frontend",
-      "Backend",
+      "frontend",
+      "backend",
       "Infra",
       "Docs",
-      "Tests"
+      "database",
+      "terrain",
+      "roads",
+      "transit",
+      "district"
+    ],
+    "risk": [
+      "Low Risk"
     ],
     "special": [
-      "HUMAN \u203c\ufe0f",
+      "HUMAN",
       "Blocked"
     ]
   },

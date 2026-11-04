@@ -1,333 +1,184 @@
-# AI Agent Instructions
-# Format: Claude Code
-# Generated: 2026-02-23
-# Source: agent_instructions/
-#
-# DO NOT EDIT DIRECTLY - regenerate with: bin/vibe generate-agent-instructions
+# CLAUDE.md – AI Agent Instructions (City Doodle)
 
+Instructions for every AI agent working in this repo (Claude, Codex, Cursor, ...).
+Hand-maintained: edit it directly, in a PR, like any other file.
 
-# CLAUDE.md - AI Agent Instructions
+---
 
 ## Project Overview
 
-**Project:** (your project name)
-**Description:** (what this project does)
-
-**Tech Stack:**
-- Backend: (e.g., FastAPI, Django, Express)
-- Frontend: (e.g., React, Next.js, Vue)
-- Database: (e.g., PostgreSQL, Supabase, Neon)
-- Deployment: (e.g., Vercel, Fly.io, AWS)
+- **What it is:** a lo-fi vector city builder. Users generate terrain, place districts, roads and transit, and watch the city grow. See `README.md`.
+- **Stack:**
+  - `apps/web`: React 18 + TypeScript + Vite + PixiJS + Tailwind + TanStack Query, on **Vercel**. Heavy geometry runs in a Web Worker (`src/workers/`).
+  - `apps/api`: FastAPI + async SQLAlchemy + Alembic (`apps/api/alembic/`), on **Fly** (`city-doodle-api`).
+  - `apps/worker`: Python job worker for terrain and growth generation, on **Fly** (`city-doodle-worker`).
+  - `packages/shared`: shared TypeScript types and Python schemas.
+  - Database: **Neon** Postgres.
+  - `lib/vibe`, `bin/`: developer and agent tooling (vibe CLI).
+- **GitHub:** `kevin-earl-denny/city-doodle`. **Linear:** workspace `2wrist`, team **CITY**.
 
 ---
 
 ## Core Rules
 
-- Read files before modifying them - understand existing code before making changes
-- Use existing patterns - match the codebase's style, naming conventions, and architecture
-- Prefer editing over creating - modify existing files rather than creating new ones
-- Keep changes minimal - only change what's necessary to complete the task
-- No security vulnerabilities - avoid XSS, SQL injection, command injection, etc.
-- Handle errors gracefully - don't leave code in broken states
-- Test your changes - verify code works before marking task complete
-- Document non-obvious code - add comments only where the logic isn't self-evident
-- Every PR must reference a ticket - PR titles must include the ticket ID (e.g. "PROJ-123: Add feature")
-- Every ticket must have labels - at minimum one type label (Bug/Feature/Chore/Refactor) and one area label (Frontend/Backend/Infra/Docs)
-- Set parent/child relationships for related tickets - use --parent when creating sub-tasks
-- Use blocking links for dependencies - the prerequisite ticket blocks the dependent ticket
+- **Ask** when requirements are ambiguous, several valid approaches exist, or an action is destructive or outward-facing. **Don't ask** when the answer is in the repo, a standard pattern applies, or the action is trivially reversible. If you're more than 80% confident, proceed and state the assumption.
+- **HUMAN label = "I cannot proceed without a human."** First check whether you can do it with the CLIs and credentials you have (`gh`, `fly`, `vercel`, `bin/ticket`); if so, do it. HUMAN is for console-only setup, payment, secrets only Kevin holds, and external communication. Every HUMAN ticket has step-by-step instructions.
+- **Never work on `main` or in the main checkout.** One worktree per ticket.
+- **Prefer absolute paths over `cd`:** `git -C <path>`, `npm --prefix <path>`, `gh --repo kevin-earl-denny/city-doodle`.
+- **Sync before you read:** run `git -C <repo> fetch origin` and reason against `origin/main`. Local `main` goes stale quickly; the SessionStart hook warns when it is.
+- **Every bug fix ships a regression test** in the same PR, or the PR says why it can't.
+- **Never swallow errors.** A caught exception that returns a fallback is worse than a loud failure. Caught DB errors roll back the session.
+- **Stage explicit paths** (`git add -- <paths>`), never `git add -A`: other agents may share the checkout.
 
 ---
 
-## Available Labels
+## Tickets (Linear, team CITY)
 
-These labels are configured in `.vibe/config.json`. Apply them when creating tickets.
+### "Do ticket CITY-123"
+Run `bin/vibe do CITY-123`. It:
+- creates `../city-doodle-worktrees/CITY-123` on branch `CITY-123`;
+- claims the ticket (In Progress, assigned to you);
+- refuses a ticket someone else already started (`--force` overrides);
+- with `--dry-run`, prints what it would do and changes nothing.
 
-**Type (exactly one required):** Bug, Feature, Chore, Refactor
+Do all the work in that worktree and open a PR when done. Don't combine `bin/vibe do` with Claude Code's `isolation: "worktree"` on the same ticket.
 
-**Area (at least one required):** Frontend, Backend, Infra, Docs, Tests
+### Creating tickets
+1. **Search first** (`bin/ticket list`) and prefer updating an existing ticket.
+2. **Title:** Verb + Object ("Fix terrain progress hook looking up wrong center tile").
+3. **Labels:**
+   - one type: `Bug`, `Feature`, `Improvement`, `chore` or `Refactor`;
+   - at least one area: `frontend`, `backend`, `Infra`, `Docs`, `database`, `terrain`, `roads`, `transit` or `district`;
+   - `Low Risk` when it is; `HUMAN` when a person must act.
+   - Priority uses Linear's native field, not labels.
+4. **Description:** `## Context` (for bugs, include the root cause), numbered testable `## Acceptance Criteria`, and `## Dependencies`. A ticket with no description is never acceptable.
+5. **Dependencies:** link with `bin/ticket relate CITY-1 --blocks CITY-2`.
+6. **Descriptions are the source of truth.** Put scope changes in the description, not in comments.
 
-**Special (as needed):** HUMAN ‼️, Blocked
+### Status flow
+**Backlog** → **Todo** → **In Progress** (`bin/vibe do`) → **In Review** (PR open) → **Deployed** (merged) → **Done** (verified in the running app).
 
----
+**Merging is Deployed, not Done.** Move a ticket to Done only after checking its acceptance criteria against production. Terminal states: Canceled, Duplicate.
 
-## Ticket Discipline
-
-Follow these rules for every ticket and PR:
-
-### Labels Are Required
-
-Every ticket **must** have labels when created:
-
-- **Type** (exactly one): Bug, Feature, Chore, or Refactor
-- **Area** (at least one): Frontend, Backend, Infra, or Docs
-- **Risk** (exactly one): Low Risk, Medium Risk, or High Risk
-
-```bash
-bin/ticket create "Fix login bug" --description "Login returns 500 on special chars." --label Bug --label Frontend --label "Low Risk"
-```
-
-### Parent/Child Relationships
-
-When creating sub-tasks, set the parent ticket:
-
-```bash
-bin/ticket create "Add signup form" --description "React signup component." --label Feature --label Frontend --parent PROJ-100
-```
-
-### Blocking Relationships
-
-When one ticket must be completed before another can start, link them with a blocking relationship. The prerequisite ticket blocks the dependent ticket:
-
-```bash
-bin/ticket link PROJ-101 --blocks PROJ-102
-```
-
-### Every PR Needs a Ticket
-
-Every pull request **must** reference a ticket. Include the ticket ID in the PR title:
-
-```bash
-bin/vibe pr --title "PROJ-123: Add user authentication"
-```
+Linear's native GitHub integration moves tickets on PR open and merge. Don't add workflows or hooks that also write those transitions.
 
 ---
 
-## Available Commands
+## Pull Requests
 
-| Command | Description |
-|---------|-------------|
-| `bin/vibe doctor` | Check project health and configuration. |
-| `bin/vibe setup` | Run the setup wizard to configure your project. |
-| `bin/vibe do <ticket-id>` | Start working on a ticket (creates worktree and branch). |
-| `bin/ticket list` | List tickets from the tracker. |
-| `bin/ticket get <ticket-id>` | Get details for a specific ticket. |
-| `bin/ticket create "<title>" --description "<description>" --label "<type>" --label "<area>"` | Create a new ticket. **A description is REQUIRED** — never create a ticket without one. **Labels are REQUIRED** — always include at least one type label and one area label. Use --parent to set a parent ticket for sub-tasks. |
-| `bin/ticket link <blocker-id> --blocks <dependent-id>` | Link two tickets with a blocking relationship. The prerequisite ticket blocks the dependent ticket. |
-| `bin/vibe pr` | Create a pull request for the current branch. PR titles must include the ticket reference. |
-| `bin/vibe figma analyze` | Analyze frontend codebase for design system context. |
-| `bin/vibe generate-agent-instructions` | Generate assistant-specific instruction files. |
+- **Branch** `CITY-<n>`. **Title** `CITY-<n>: <summary>`. Rebase on `main`; never merge `main` into a branch.
+- **Body:** fill in `.github/PULL_REQUEST_TEMPLATE.md` with these sections:
+  - Summary
+  - Changes
+  - Verification: what you actually ran, and the results
+  - Gotchas
+  - Secrets: new env vars and where they're set, or "None"
+  - Cleanup: cloud resources created and deleted, or "None"
 
-### Command Details
+  Then add `Linear: CITY-<n>`, the Claude Code footer, and, as its own last line, the author marker `<!-- city-author session=<your session name> -->`. `bin/vibe pr` fills this in.
+- **Never add `--reviewer`.** Review here is agents plus CodeRabbit only.
+- Update the description when follow-up commits change scope.
 
-#### doctor
+### Merge bar
+A PR may merge when **either** of these holds on the **current head SHA**:
+1. **CodeRabbit** has APPROVED it (its latest state-changing review), **or**
+2. **two distinct agent reviewers**, neither of them the author session or its subagents, have posted clean reviews (verdict `pass` or `minor`).
 
-Check project health and configuration.
+Any `major` verdict on the head blocks it until a new push. A push invalidates earlier reviews. The required `review-gate` status enforces this (`bin/vibe review-gate <n>` checks a PR locally).
 
-**Usage:** `bin/vibe doctor`
+**Agent review format.** A review is a GitHub PR **review** (event `COMMENT`, since agents can't approve PRs from their own account). Its exact last non-empty line is the marker printed by `bin/vibe review-marker --reviewer <id> --verdict pass|minor|major --pr <n>`, which has this shape:
 
-#### setup
+    <!-- city-agent-review v1 reviewer=<id> head=<40-char sha> verdict=pass|minor|major -->
 
-Run the setup wizard to configure your project.
+- Never mention the marker name anywhere else in the review.
+- Never edit a posted review; post a new one. An edited or malformed review blocks its head.
+- The reviewer id is your session name, with `/<suffix>` for subagents.
+- Verdicts:
+  - `major`: a bug, a security or data-loss problem, unmet acceptance criteria, or failing tests;
+  - `minor`: nits only;
+  - `pass`: nothing found.
 
-**Usage:** `bin/vibe setup`
+**CodeRabbit:**
+- `request_changes_workflow` is on, so it APPROVES once its threads are resolved.
+- Only the first push is auto-reviewed. After pushing fixes, comment `@coderabbitai review` once per round.
+- Reply on each thread with `Fixed in <sha>` or a reasoned won't-fix. "Noted" is not a resolution.
+- It reads `.coderabbit.yaml` from `main` only.
 
-#### do
-
-Start working on a ticket (creates worktree and branch).
-
-**Usage:** `bin/vibe do <ticket-id>`
-
-#### ticket list
-
-List tickets from the tracker.
-
-**Usage:** `bin/ticket list`
-
-#### ticket get
-
-Get details for a specific ticket.
-
-**Usage:** `bin/ticket get <ticket-id>`
-
-#### ticket create
-
-Create a new ticket. **A description is REQUIRED** — never create a ticket without one. **Labels are REQUIRED** — always include at least one type label and one area label. Use --parent to set a parent ticket for sub-tasks.
-
-**Usage:** `bin/ticket create "<title>" --description "<description>" --label "<type>" --label "<area>"`
-
-#### ticket link
-
-Link two tickets with a blocking relationship. The prerequisite ticket blocks the dependent ticket.
-
-**Usage:** `bin/ticket link <blocker-id> --blocks <dependent-id>`
-
-#### pr
-
-Create a pull request for the current branch. PR titles must include the ticket reference.
-
-**Usage:** `bin/vibe pr`
-
-#### figma analyze
-
-Analyze frontend codebase for design system context.
-
-**Usage:** `bin/vibe figma analyze`
-
-#### generate-agent-instructions
-
-Generate assistant-specific instruction files.
-
-**Usage:** `bin/vibe generate-agent-instructions`
+**Reviewing someone else's PR:** comment only; never push to their branch. Use `/review` for a deep review and `/fixup` to make your own PR mergeable.
 
 ---
 
-## Workflows
+## Worktrees & Multi-Agent Work
 
-### Starting Work on a Ticket
-
-**Step 1: Create Worktree**
-Create a dedicated workspace for the ticket.
-
-```bash
-bin/vibe do PROJ-123
-```
-
-**Step 2: Read the Ticket**
-Understand what needs to be done.
-
-```bash
-bin/ticket get PROJ-123
-```
-
-**Step 3: Implement the Work**
-Make changes in the worktree directory.
-
-**Step 4: Test Your Changes**
-Verify the implementation works.
-
-**Step 5: Commit Changes**
-Commit with a descriptive message that includes the ticket ID.
-
-```bash
-git add <files>
-git commit -m "PROJ-123: Brief description of changes"
-```
-
-**Step 6: Create Pull Request**
-Open a PR when work is complete. The PR title must include the ticket reference.
-
-```bash
-git push -u origin PROJ-123
-bin/vibe pr --title "PROJ-123: Add feature description"
-```
-
-### Creating Related Tickets
-
-**Step 1: Create Parent Ticket**
-Create the parent ticket with labels.
-
-```bash
-bin/ticket create "Epic: User auth system" --description "Full authentication system with OAuth2." --label Feature --label Backend
-```
-
-**Step 2: Create Child Tickets**
-Create child tickets with --parent and labels.
-
-```bash
-bin/ticket create "Add login endpoint" --description "POST /auth/login with JWT." --label Feature --label Backend --parent PROJ-100
-bin/ticket create "Add signup form" --description "React signup form component." --label Feature --label Frontend --parent PROJ-100
-```
-
-**Step 3: Set Blocking Relationships**
-Link tickets that have dependencies.
-
-```bash
-bin/ticket link PROJ-101 --blocks PROJ-102
-```
-
-### Creating a Pull Request
-
-**Step 1: Verify Changes**
-Check what will be included in the PR.
-
-```bash
-git status
-git diff origin/main
-```
-
-**Step 2: Push Changes**
-Push your branch to the remote.
-
-```bash
-git push -u origin BRANCH-NAME
-```
-
-**Step 3: Create PR**
-Open the pull request with the ticket ID in the title.
-
-```bash
-bin/vibe pr
-```
-
-**Step 4: Verify CI**
-Wait for CI checks to pass.
-
-### Handling CI Failures
-
-**Step 1: Read the Failure**
-Check the actual error message.
-
-```bash
-gh pr checks <pr-number>
-gh run view <run-id> --log-failed
-```
-
-**Step 2: Fix the Issue**
-Address the specific failure.
-
-**Step 3: Push the Fix**
-Push the fix and re-run CI.
-
-```bash
-git add <files>
-git commit -m "Fix CI failure: <description>"
-git push
-```
-
-### Cleaning Up After Merge
-
-**Step 1: Remove Worktree**
-Clean up the worktree from the main repo.
-
-```bash
-git worktree remove <worktree-path>
-```
-
-**Step 2: Delete Local Branch**
-Remove the local branch.
-
-```bash
-git branch -d PROJ-123
-```
-
-**Step 3: Sync State**
-Update local state.
-
-```bash
-bin/vibe doctor
-```
+- Worktrees live in `../city-doodle-worktrees/CITY-<n>`.
+- `bin/vibe cleanup` removes a worktree only when **all** of these hold: its ticket is terminal (Done, Canceled or Deployed), it has no uncommitted changes, and it's more than 30 minutes old. **Never** judge a worktree stale with `git branch --merged`, because a fresh zero-commit branch looks merged.
+- Worktrees have no `.env.local`. Tools fall back to the main checkout's copy.
+- Several sessions run in parallel. Announce which files you're touching, stay in your lane, and check `git branch -r` / `gh pr list` before starting overlapping work.
 
 ---
 
-## Anti-Patterns to Avoid
+## Environment & Secrets
 
-- **Don't:** Guessing file contents without reading them first
-- **Don't:** Creating new abstractions for one-time operations
-- **Don't:** Adding features, refactoring, or "improvements" beyond what was asked
-- **Don't:** Over-engineering with unnecessary complexity
-- **Don't:** Leaving console.log or debug statements in production code
-- **Don't:** Ignoring existing error handling patterns
-- **Don't:** Making assumptions about requirements without asking
-- **Don't:** Committing secrets, API keys, or credentials
-- **Don't:** Creating tickets without labels - every ticket needs type and area labels
-- **Don't:** Opening PRs without a ticket reference in the title
-- **Don't:** Creating related tickets without parent/child or blocking relationships
+- Secrets live in `.env.local` (gitignored, never committed) at the main checkout root. `.envrc` (committed) loads it with direnv and puts `bin/` on `PATH`: run `direnv allow` once.
+- Every new env var goes in `.env.example` (with where it's set: Fly app, Vercel, GitHub secret) **in the same PR**, and gets set wherever it's deployed, or has a HUMAN ticket.
+- Deployed: `fly secrets list -a city-doodle-api` / `-a city-doodle-worker`; Vercel project env for `apps/web`.
 
 ---
 
-## Important Files
+## Git Hooks & CI
 
-- ``CLAUDE.md` - AI agent instructions (this generated file)`
-- ``.vibe/config.json` - Project configuration`
-- ``README.md` - Project documentation`
-- ``.env.example` - Environment variable template`
+- Install once per clone: `git config --local core.hooksPath .githooks`. This also applies to worktrees.
+  - **pre-commit** refuses `.env` / `.env.*` files (except `.env.example`).
+  - **pre-push** lints the files you changed (ruff for Python; eslint for `apps/web`), runs `tsc`, and warns on multiple Alembic heads.
+  - Bypass with `--no-verify` only after running those checks another way.
+- **Alembic:** `bin/migrations check` must report one head. Revision ids must be unique. Run `bin/migrations fix-heads` after concurrent migration merges.
+- **Read the failing log before fixing anything:** `gh pr checks <n> --repo kevin-earl-denny/city-doodle`, then `gh run view <id> --log-failed`.
+- Actions are pinned to commit SHAs with a `# vX.Y.Z` comment, and runners to a fixed Ubuntu version (`ubuntu-latest` moved to 26.04 and broke Playwright: CITY-649).
+
+---
+
+## CLI Conventions (`bin/*`)
+
+1. **Fail loudly.** Exit codes: 0 ok, 1 expected error, 2 drift or incident. A CLI that prints "nothing found" when its credential is missing is a bug. File it as an Urgent ticket.
+2. **Smoke-test every subcommand you change** and put a ✅/❌/⏸️ matrix in the PR body.
+
+```bash
+bin/vibe do CITY-123          # worktree + claim; --force, --dry-run
+bin/vibe pr                   # open a PR for the current branch (fills template + author marker)
+bin/vibe cleanup              # remove worktrees whose ticket is terminal
+bin/vibe doctor               # health check
+bin/vibe review-gate <pr>     # evaluate the merge bar locally (dry run)
+bin/vibe review-marker ...    # print an agent-review marker line
+bin/ticket list|get|create|update|comment|relate|close|labels|projects|users
+bin/migrations check|heads|fix-heads
+bin/logs                      # query API/worker logs in Axiom (see bin/logs help)
+```
+
+Slash commands (`.claude/commands/`):
+- `/do`, `/pr`, `/ticket`, `/cleanup`, `/doctor`;
+- `/review`: the default for any review request;
+- `/fixup`: get your PR green and approved;
+- `/fly`, `/neon`, `/vercel`.
+
+---
+
+## Code Conventions
+
+- **Python:** ruff-clean. Migrations never import app packages at module load.
+- **TypeScript:** strict, no `any`. TanStack Query owns server state; optimistic updates roll back on failure. Keep heavy geometry off the main thread.
+- **Numeric falsy:** a real `0` is not missing. Use `!= null`, not `!value` or `value || fallback`.
+- **PixiJS:** destroy what you create (textures, graphics) or GPU memory leaks.
+
+---
+
+## Anti-Patterns
+
+1. Working on `main` or in the main checkout.
+2. Guessing at CI failures without reading the logs.
+3. Committing secrets or `.env.local`.
+4. Tickets without a description, labels or acceptance criteria.
+5. Moving a ticket to Done on merge or commit.
+6. Assuming CodeRabbit re-reviewed a follow-up push.
+7. Shipping a CLI change without a smoke-test matrix.
+8. Deleting another agent's worktree or branch.
+9. Two migrations with the same `down_revision` or revision id.
