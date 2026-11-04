@@ -117,15 +117,21 @@ def detect_delta_candidates(
         if flow_val < min_flow:
             continue
 
-        # Calculate flow direction from last few coordinates
+        # Flow direction at the mouth. Prefer the tangent extract_rivers
+        # recorded before simplifying the line (CITY-683); the last few
+        # vertices of a simplified river can span most of its length.
         tail_n = min(6, len(coords))
         tail_coords = coords[-tail_n:]
-        dx = tail_coords[-1][0] - tail_coords[0][0]
-        dy = tail_coords[-1][1] - tail_coords[0][1]
-        mag = math.hypot(dx, dy)
-        if mag < 1e-10:
-            continue
-        flow_dir = (dx / mag, dy / mag)
+        mouth_dir = river.properties.get("mouth_direction")
+        if mouth_dir:
+            flow_dir = (float(mouth_dir[0]), float(mouth_dir[1]))
+        else:
+            dx = tail_coords[-1][0] - tail_coords[0][0]
+            dy = tail_coords[-1][1] - tail_coords[0][1]
+            mag = math.hypot(dx, dy)
+            if mag < 1e-10:
+                continue
+            flow_dir = (dx / mag, dy / mag)
 
         # Convert tail coordinates to grid cells
         tail_cells = []
