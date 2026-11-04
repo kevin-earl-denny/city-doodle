@@ -303,10 +303,16 @@ def river_valley_mask(
     meander_freq2 = meander_freq * 2.3
     meander_phase2 = _seeded_hash(ctx.seed, 22) * 2.0 * math.pi
 
-    # Valley geometry
-    river_half_w = ts * 0.03    # River channel half-width
-    valley_half_w = ts * 0.25   # Full valley half-width
-    max_depression = 0.4        # Max height reduction at river bottom
+    # Valley geometry (CITY-646). The channel and the valley walls are
+    # carved separately: only the channel drops below water_level (~0.28
+    # against land heights near 0.5), while the walls get a shallow
+    # depression that reads as low ground but stays dry. A single deep
+    # profile flooded the whole inner valley into a ~75px band.
+    river_half_w = ts * 0.03       # River channel half-width
+    bank_w = ts * 0.015            # Width of the steep channel bank
+    valley_half_w = ts * 0.25      # Full valley half-width
+    channel_depression = 0.4       # Height reduction at the river bottom
+    wall_depression = 0.1          # Height reduction across the valley floor
 
     # Build world-coordinate grids
     step = ts / res
@@ -331,16 +337,15 @@ def river_valley_mask(
     # Perpendicular distance from the meandering centerline
     dist = np.abs(v - meander)
 
-    # Valley profile: two-zone cross-section
-    #   1. River channel (dist < river_half_w): full depression
-    #   2. Valley walls (river_half_w < dist < valley_half_w): smooth rise
-    #   3. Beyond valley: no change
-    t = np.clip(
-        (dist - river_half_w) / np.maximum(valley_half_w - river_half_w, 1e-10),
-        0.0,
-        1.0,
+    # Valley profile: sum of two smoothstep falloffs
+    #   1. Channel: full depression inside river_half_w, gone by river_half_w + bank_w
+    #   2. Valley walls: shallow depression easing out to valley_half_w
+    channel_t = np.clip((dist - river_half_w) / bank_w, 0.0, 1.0)
+    wall_t = np.clip(dist / valley_half_w, 0.0, 1.0)
+    depression = (
+        channel_depression * (1.0 - _smoothstep(channel_t))
+        + wall_depression * (1.0 - _smoothstep(wall_t))
     )
-    depression = max_depression * (1.0 - _smoothstep(t))
 
     return heightfield - depression
 
