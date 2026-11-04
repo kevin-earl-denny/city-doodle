@@ -24,11 +24,11 @@ target_metadata = Base.metadata
 def transform_url_for_sync(url: str) -> str:
     """Transform async database URL for sync psycopg2 usage.
 
-    - Removes +asyncpg driver suffix (uses default psycopg2)
+    - Pins the psycopg2 driver explicitly: SQLAlchemy 2.1 made a bare
+      postgresql:// URL default to psycopg 3, which isn't installed (CITY-681)
     - Converts ssl= back to sslmode= for psycopg2
     """
-    # Remove asyncpg driver suffix
-    url = url.replace("postgresql+asyncpg://", "postgresql://")
+    url = re.sub(r"^postgresql(\+asyncpg)?://", "postgresql+psycopg2://", url)
     # Convert ssl= to sslmode= for psycopg2
     url = re.sub(r"\bssl=(\w+)", r"sslmode=\1", url)
     return url
@@ -39,7 +39,7 @@ def get_url():
     # Prefer explicit sync URL, otherwise transform async URL
     sync_url = os.getenv("DATABASE_URL_SYNC")
     if sync_url:
-        return sync_url
+        return transform_url_for_sync(sync_url)
 
     url = os.getenv("DATABASE_URL", "postgresql://localhost/city_doodle")
     return transform_url_for_sync(url)
