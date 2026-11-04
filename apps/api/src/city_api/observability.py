@@ -17,6 +17,9 @@ Load-bearing properties (ported from sarto-db ``api/observability.py``):
 * **Axiom being down never takes the app down.** Every shipping failure is counted and
   reported to stderr (rate-limited), never raised. A full queue drops records and counts
   the drop instead of blocking or growing without bound.
+* **No row values or query parameters ship.** Messages, exception text and
+  tracebacks pass through ``redact_sensitive`` (Postgres DETAIL lines, SQLAlchemy
+  ``[parameters: ...]``, asyncpg argument errors, pydantic ``input_value``).
 * **With AXIOM_* unset nothing changes.** ``configure_axiom_logging`` returns ``None``
   without touching any logger, so stdout logging is exactly what it was.
 """
@@ -65,6 +68,33 @@ FAILURE_REPORT_INTERVAL_S = 60.0
 # request, so it is only honoured when it is a short token.
 REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
+# Database errors echo row values and query arguments into their text: Postgres puts
+# `Key (email)=(alice@example.com) already exists.` in a DETAIL line that asyncpg
+# includes in str(exc), SQLAlchemy appends `[parameters: (...)]` (unless the engine
+# sets hide_parameters), and asyncpg says `invalid input for query argument $1: <value>`.
+# Every shipped message/exception/traceback passes through ``redact_sensitive`` so none
+# of that (emails, session tokens) lands in a durable, queryable store.
+_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^([ \t]*)DETAIL:.*$", re.MULTILINE), r"\1DETAIL: [redacted]"),
+    (re.compile(r"\[parameters: [^\n]*"), "[parameters: redacted]"),
+    (re.compile(r"(invalid input for query argument \$\d+:)[^\n]*"), r"\1 [redacted]"),
+    # pydantic ValidationError text echoes the offending input.
+    (re.compile(r"input_value=.*?, input_type="), "input_value=[redacted], input_type="),
+    (
+        re.compile(r"Key \(([^)\n]*)\)=\([^\n]*?\)( already exists| is not present)"),
+        r"Key (\1)=([redacted])\2",
+    ),
+)
+
+
+def redact_sensitive(text: object) -> str:
+    """Scrub DB row values / query parameters from an error message or traceback."""
+    out = str(text)
+    for pattern, replacement in _REDACTIONS:
+        out = pattern.sub(replacement, out)
+    return out
+
+
 # Fields bound for the current request / job. Holds a dict that code further down the
 # call stack may mutate (see ``set_log_fields``), so values set inside a dependency are
 # visible to the middleware that logs the request line afterwards.
@@ -104,7 +134,7 @@ def request_id_from(header: str | None) -> str:
 
 
 def bind_log_context(**fields: Any) -> contextvars.Token:
-    """Start a fresh log context (per request / per job). Pass the token to ``reset_log_context``."""
+    """Start a fresh log context (per request / job); pass the token to ``reset_log_context``."""
     return _log_context.set({k: v for k, v in fields.items() if v is not None})
 
 
@@ -141,7 +171,7 @@ class JsonEventFormatter:
             "_time": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname.lower(),
             "logger_name": record.name,
-            "message": record.getMessage(),
+            "message": redact_sensitive(record.getMessage()),
         }
         event.update(self.static_fields)
         event.update(_log_context.get() or {})
@@ -151,9 +181,9 @@ class JsonEventFormatter:
         if record.exc_info and record.exc_info[0] is not None:
             exc_type, exc_value, exc_tb = record.exc_info
             event["exc_type"] = exc_type.__name__
-            event["exc_message"] = str(exc_value)
-            event["exc_traceback"] = "".join(
-                traceback.format_exception(exc_type, exc_value, exc_tb)
+            event["exc_message"] = redact_sensitive(exc_value)
+            event["exc_traceback"] = redact_sensitive(
+                "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
             )
         return event
 
@@ -190,7 +220,8 @@ class AxiomShipper:
 
     # -- producer side (any thread; must never block or raise) --------------------
 
-    def submit(self, event: dict[str, Any]) -> None:
+    def submit(self, event: str | dict[str, Any]) -> None:
+        """Queue one record: normally its JSON text, encoded by the handler at log time."""
         try:
             self.queue.put_nowait(event)
         except queue.Full:
@@ -236,18 +267,22 @@ class AxiomShipper:
             if stop:
                 return
 
-    def ship(self, batch: list[dict[str, Any]]) -> bool:
+    def ship(self, batch: list[str | dict[str, Any]]) -> bool:
         """POST one batch. Never raises; returns whether Axiom accepted it.
 
-        Records are encoded one by one so a single unserialisable record is dropped
-        and counted on its own instead of taking the rest of the batch with it.
+        Items are normally JSON text already (``AxiomHandler`` encodes at log time);
+        any dict is encoded here one by one, so a single unserialisable record is
+        dropped and counted on its own instead of taking the batch with it.
         """
         encoded: list[str] = []
         for event in batch:
+            if isinstance(event, str):
+                encoded.append(event)
+                continue
             try:
                 encoded.append(json.dumps(event, default=str))
             except Exception as exc:  # noqa: BLE001 - e.g. a value whose __str__ raises
-                self._record_failure(1, exc)
+                self.record_failure(1, exc)
         if not encoded:
             return False
         try:
@@ -263,10 +298,11 @@ class AxiomShipper:
                 resp.read()
             return True
         except Exception as exc:  # noqa: BLE001 - Axiom being down must not break the app
-            self._record_failure(len(encoded), exc)
+            self.record_failure(len(encoded), exc)
             return False
 
-    def _record_failure(self, n: int, exc: BaseException) -> None:
+    def record_failure(self, n: int, exc: BaseException) -> None:
+        """Count ``n`` records that will never ship; report to stderr (rate-limited)."""
         with self._lock:
             self.failed_records += n
             self.last_failure = f"{type(exc).__name__}: {exc}"
@@ -341,7 +377,11 @@ def _stderr(message: str) -> None:
 
 
 class AxiomHandler(logging.Handler):
-    """Logging handler that formats on the caller's thread and enqueues for the shipper."""
+    """Logging handler that formats and JSON-encodes on the caller's thread, then enqueues.
+
+    Encoding at log time freezes the record (later mutation of a logged object can't
+    change what ships) and confines a record that can't be encoded to itself.
+    """
 
     def __init__(
         self, shipper: AxiomShipper, formatter: JsonEventFormatter, level: int = 0
@@ -355,9 +395,16 @@ class AxiomHandler(logging.Handler):
         if self.shipper.is_drain_thread():
             return
         try:
-            self.shipper.submit(self.event_formatter.to_event(record))
+            event = self.event_formatter.to_event(record)
         except Exception:  # noqa: BLE001 - logging must never raise into the app
             self.handleError(record)
+            return
+        try:
+            encoded = json.dumps(event, default=str)
+        except Exception as exc:  # noqa: BLE001 - e.g. an extra= value whose __str__ raises
+            self.shipper.record_failure(1, exc)
+            return
+        self.shipper.submit(encoded)
 
 
 _installed: list[tuple[logging.Logger, logging.Handler]] = []

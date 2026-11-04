@@ -1,6 +1,9 @@
 """CITY-642: request logging middleware fields and the AXIOM-unset no-op."""
 
+import json
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 from fastapi import FastAPI
@@ -138,8 +141,8 @@ async def test_request_line_ships_with_request_id_in_axiom_event(captured):
     events = []
 
     class FakeShipper:
-        def submit(self, event):
-            events.append(event)
+        def submit(self, encoded):
+            events.append(json.loads(encoded))
 
         def is_drain_thread(self):
             return False
@@ -163,26 +166,93 @@ async def test_request_line_ships_with_request_id_in_axiom_event(captured):
     assert event["service"] == "api"
 
 
-# --- CITY-642 review: no secrets/PII in handler log lines -------------------------
+# --- CITY-642 review: no secrets / PII reach Axiom ----------------------------------
+# Each test ships through the real handler + shipper to a local HTTP collector and
+# asserts on the bytes Axiom would have received.
 
-_EMAIL = "victim@example.com"
-_TOKEN = "sess-secret-token-123"
-_ORIG_MSG = (
-    "<class 'asyncpg.exceptions.UniqueViolationError'>: duplicate key value violates "
-    'unique constraint "users_email_key"\n'
-    f"DETAIL:  Key (email)=({_EMAIL}) already exists."
-)
+EMAIL = "alice@example.com"
+SESSION_TOKEN = "sess_9f8e7d6c5b4a"
+QUERY_SECRET = "qs-secret-42"
 
 
-def _request_with_query():
+@pytest.fixture
+def shipped():
+    """Root logger -> AxiomHandler -> AxiomShipper -> local collector. Yields a reader."""
+    bodies: list[bytes] = []
+
+    class Collector(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server API
+            bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Collector)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    shipper = observability.AxiomShipper(
+        "xaat-test", "ds", url=f"http://127.0.0.1:{server.server_port}/ingest"
+    )
+    shipper.start()
+    handler = observability.AxiomHandler(
+        shipper, observability.JsonEventFormatter({"service": "api"}), logging.INFO
+    )
+    root = logging.getLogger()
+    old_level = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    # As configure_axiom_logging does: the test's own httpx client logs full URLs.
+    httpx_logger = logging.getLogger("httpx")
+    old_httpx = httpx_logger.level
+    httpx_logger.setLevel(logging.WARNING)
+
+    def read() -> tuple[str, list[dict]]:
+        assert shipper.flush(5)
+        events = [e for body in bodies for e in json.loads(body)]
+        return b"".join(bodies).decode(), events
+
+    yield read
+    root.removeHandler(handler)
+    root.setLevel(old_level)
+    httpx_logger.setLevel(old_httpx)
+    shipper.stop(1)
+    server.shutdown()
+    server.server_close()
+
+
+def _asyncpg_unique_violation():
+    """The exception SQLAlchemy raises for a duplicate email on asyncpg."""
+    import asyncpg
+    from sqlalchemy.dialects.postgresql.asyncpg import AsyncAdapt_asyncpg_dbapi
+    from sqlalchemy.exc import IntegrityError
+
+    driver = asyncpg.exceptions.UniqueViolationError(
+        'duplicate key value violates unique constraint "users_email_key"'
+    )
+    driver.detail = f"Key (email)=({EMAIL}) already exists."
+    driver.constraint_name = "users_email_key"
+    driver.table_name = "users"
+    adapted = AsyncAdapt_asyncpg_dbapi.IntegrityError(f"{type(driver)}: {driver}", driver)
+    adapted.__cause__ = driver
+    exc = IntegrityError(
+        "INSERT INTO users (email, password_hash) VALUES ($1, $2)",
+        (EMAIL, "hash"),
+        adapted,
+    )
+    assert EMAIL in str(exc) and EMAIL in str(exc.orig)  # the leak being guarded
+    return exc
+
+
+def _request(path="/auth/register", query=f"token={QUERY_SECRET}"):
     from fastapi import Request
 
     return Request(
         {
             "type": "http",
             "method": "POST",
-            "path": "/auth/register",
-            "query_string": f"token={_TOKEN}".encode(),
+            "path": path,
+            "query_string": query.encode(),
             "headers": [(b"host", b"testserver")],
             "server": ("testserver", 80),
             "scheme": "http",
@@ -191,48 +261,90 @@ def _request_with_query():
 
 
 @pytest.mark.asyncio
-async def test_integrity_handler_logs_path_without_query_or_row_values(caplog):
-    from sqlalchemy.exc import IntegrityError
-
+async def test_duplicate_email_never_ships(shipped):
     from city_api.main import integrity_error_handler
 
-    exc = IntegrityError("INSERT INTO users ...", {"email": _EMAIL}, Exception(_ORIG_MSG))
-    with caplog.at_level(logging.WARNING, logger="city_api.main"):
-        response = await integrity_error_handler(_request_with_query(), exc)
+    exc = _asyncpg_unique_violation()
+    response = await integrity_error_handler(_request(), exc)
     assert response.status_code == 409
-    text = caplog.text
-    assert "/auth/register" in text
-    assert "users_email_key" in text
-    assert _TOKEN not in text and "token=" not in text
-    assert _EMAIL not in text
+    raw, events = shipped()
+    assert EMAIL not in raw and QUERY_SECRET not in raw
+    (event,) = [e for e in events if "integrity error" in e["message"]]
+    assert "/auth/register" in event["message"]
+    assert "UniqueViolationError" in event["message"]
+    assert "constraint=users_email_key" in event["message"]
 
 
 @pytest.mark.asyncio
-async def test_dbapi_handler_hides_parameters_and_detail(caplog):
+async def test_session_token_in_sql_parameters_never_ships(shipped):
+    """Even without hide_parameters, the parameters and DETAIL are scrubbed centrally."""
     from sqlalchemy.exc import DBAPIError
 
     from city_api.main import dbapi_error_handler
 
-    # What SQLAlchemy raises for an engine created with hide_parameters=True.
+    orig = Exception(f"connection reset\nDETAIL:  Key (token)=({SESSION_TOKEN}) is not present.")
     exc = DBAPIError.instance(
-        "SELECT * FROM sessions WHERE token = $1",
-        (_TOKEN,),
-        Exception(_ORIG_MSG),
+        "SELECT * FROM sessions WHERE sessions.token = $1",
+        (SESSION_TOKEN,),
+        orig,
         Exception,
-        hide_parameters=True,
+        hide_parameters=False,
     )
+    assert SESSION_TOKEN in str(exc)
     try:
         raise exc
     except DBAPIError:
-        with caplog.at_level(logging.ERROR, logger="city_api.main"):
-            response = await dbapi_error_handler(_request_with_query(), exc)
+        response = await dbapi_error_handler(_request("/auth/me"), exc)
+        # A library logging the raw exception with a traceback is scrubbed too.
+        logging.getLogger("some.library").exception("db failed: %s", exc)
     assert response.status_code == 503
-    assert _TOKEN not in caplog.text
-    assert _EMAIL not in caplog.text
-    assert "SQL parameters hidden" in caplog.text
+    raw, _ = shipped()
+    assert SESSION_TOKEN not in raw and QUERY_SECRET not in raw
+    assert "[parameters: redacted]" in raw
+
+
+@pytest.mark.asyncio
+async def test_query_string_never_ships_from_real_requests(client, shipped):
+    await client.get(f"/?token={QUERY_SECRET}")
+    await client.get(f"/does-not-exist?session={QUERY_SECRET}")
+    raw, events = shipped()
+    assert QUERY_SECRET not in raw
+    paths = {e.get("path") for e in events if e.get("event") == "request"}
+    assert {"/", "/does-not-exist"} <= paths
+
+
+@pytest.mark.asyncio
+async def test_unhandled_db_error_on_request_line_is_redacted(shipped):
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.add_middleware(RequestLoggingMiddleware)
+
+    @app.post("/register")
+    async def register():
+        raise _asyncpg_unique_violation()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://t") as c:
+        response = await c.post(f"/register?token={QUERY_SECRET}")
+    assert response.status_code == 500
+    raw, events = shipped()
+    assert EMAIL not in raw and QUERY_SECRET not in raw
+    (line,) = [e for e in events if e.get("event") == "request"]
+    assert line["exc_type"] == "IntegrityError"
+    assert "DETAIL: [redacted]" in line["exc_traceback"]
 
 
 def test_api_engine_hides_sql_parameters():
     from city_api.database import get_engine
 
     assert get_engine().sync_engine.hide_parameters is True
+
+
+def test_cors_exposes_request_id_header():
+    from starlette.middleware.cors import CORSMiddleware
+
+    from city_api.main import app
+
+    (cors,) = [m for m in app.user_middleware if m.cls is CORSMiddleware]
+    assert "X-Request-ID" in cors.kwargs["expose_headers"]

@@ -365,3 +365,59 @@ def test_configure_holds_httpx_at_warning(clean_root):
     obs.configure_axiom_logging(service="api", app_env="production", api_token="xaat-t")
     assert logging.getLogger("httpx").level == logging.WARNING
     assert logging.getLogger("httpcore").level == logging.WARNING
+
+
+# --- review round 2: central redaction, encode at log time -------------------------
+
+
+@pytest.mark.parametrize(
+    "text,secret",
+    [
+        (
+            'duplicate key value violates unique constraint "users_email_key"\n'
+            "DETAIL:  Key (email)=(alice@example.com) already exists.",
+            "alice@example.com",
+        ),
+        ("[SQL: SELECT 1 WHERE token = $1]\n[parameters: ('sess_abc',)]", "sess_abc"),
+        ("invalid input for query argument $1: 'sess_abc' (expected uuid)", "sess_abc"),
+        ("Key (owner_id)=(user-7) is not present in table users", "user-7"),
+        (
+            "1 validation error\n  [type=string_type, input_value='bob@x.io', input_type=str]",
+            "bob@x.io",
+        ),
+    ],
+)
+def test_redact_sensitive_scrubs_db_values(text, secret):
+    out = obs.redact_sensitive(text)
+    assert secret not in out
+    assert out.splitlines()[0].split()[0] == text.splitlines()[0].split()[0]
+
+
+def test_formatter_redacts_message_exception_and_traceback():
+    fmt = obs.JsonEventFormatter({})
+    try:
+        raise ValueError("boom\nDETAIL:  Key (email)=(a@b.c) already exists.")
+    except ValueError:
+        record = logging.LogRecord(
+            "x", logging.ERROR, "", 0, "failed: %s", ("[parameters: ('tok',)]",), sys.exc_info()
+        )
+    event = fmt.to_event(record)
+    blob = json.dumps(event)
+    assert "a@b.c" not in blob and "'tok'" not in blob
+    assert event["exc_type"] == "ValueError"
+
+
+def test_handler_encodes_at_log_time_and_isolates_bad_records():
+    shipper = obs.AxiomShipper("xaat-test", "ds", url="http://127.0.0.1:9/")
+    lg = _logger_with(obs.AxiomHandler(shipper, obs.JsonEventFormatter({})), "test.encode")
+    payload = {"step": "before"}
+    lg.info("one", extra={"payload": payload})
+    payload["step"] = "after"  # mutation after logging must not change what ships
+    lg.info("two", extra={"bad": _Unprintable()})
+    lg.info("three")
+    queued = [shipper.queue.get_nowait() for _ in range(shipper.queue.qsize())]
+    assert all(isinstance(q, str) for q in queued)
+    events = [json.loads(q) for q in queued]
+    assert [e["message"] for e in events] == ["one", "three"]
+    assert events[0]["payload"] == {"step": "before"}
+    assert shipper.failed_records == 1

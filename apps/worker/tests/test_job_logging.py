@@ -1,5 +1,6 @@
 """CITY-642: worker job lifecycle log events carry job/world context."""
 
+import json
 import logging
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -15,8 +16,8 @@ def events():
     collected: list[dict] = []
 
     class FakeShipper:
-        def submit(self, event):
-            collected.append(event)
+        def submit(self, encoded):
+            collected.append(json.loads(encoded))
 
         def is_drain_thread(self):
             return False
@@ -115,3 +116,22 @@ def test_worker_engine_hides_sql_parameters():
     from city_worker.database import engine
 
     assert engine.sync_engine.hide_parameters is True
+
+
+@pytest.mark.asyncio
+async def test_job_failure_with_db_detail_is_redacted(events):
+    """CITY-642 review: the worker's logger.exception ships no DB row values."""
+    runner = JobRunner()
+    err = RuntimeError(
+        'duplicate key value violates unique constraint "tiles_pkey"\n'
+        "DETAIL:  Key (world_id, tx, ty)=(secret-world, 1, 2) already exists."
+    )
+    with (
+        patch.object(runner, "_run_job_handler", side_effect=err),
+        patch.object(runner, "_update_job_status", new_callable=AsyncMock),
+        patch.object(runner, "_get_retry_info", new=AsyncMock(return_value=(3, 3))),
+    ):
+        await runner._execute_job(uuid4(), JobType.TERRAIN_GENERATION.value, {})
+    (finished,) = _by_event(events, "job_finished")
+    assert "secret-world" not in json.dumps(finished)
+    assert "DETAIL: [redacted]" in finished["exc_message"]
