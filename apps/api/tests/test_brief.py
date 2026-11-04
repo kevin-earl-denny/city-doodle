@@ -113,7 +113,7 @@ class TestPrompt:
 class TestEndpoint:
     @pytest.mark.asyncio
     async def test_returns_brief_and_compiled_settings(self, client: AsyncClient, monkeypatch):
-        async def fake_generate(request, user_id):
+        async def fake_generate(request, user_id, db):
             assert user_id == UUID(TEST_USER_ID)
             return make_brief()
 
@@ -283,8 +283,14 @@ def _install_fake(monkeypatch, *, result=None, exc=None) -> _FakeMessages:
     messages = _FakeMessages(result, exc)
     fake = types.SimpleNamespace(beta=types.SimpleNamespace(messages=messages))
     monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
+    monkeypatch.setattr(service.settings, "brief_enabled", True)
     monkeypatch.setattr(service, "_client", fake)
-    monkeypatch.setattr(service, "_check_rate_limit", lambda user_id: None)
+    monkeypatch.setattr(service, "_check_rate_limit", lambda user_id: 0.0)
+
+    async def _no_cap(db):
+        return None
+
+    monkeypatch.setattr(service, "_check_global_daily_cap", _no_cap)
     return messages
 
 
@@ -298,7 +304,7 @@ class TestServiceErrorMapping:
     @pytest.mark.asyncio
     async def test_success_returns_parsed_brief(self, monkeypatch):
         messages = _install_fake(monkeypatch, result=_FakeResponse("end_turn", make_brief()))
-        brief = await service.generate_brief(_req(), UUID(TEST_USER_ID))
+        brief = await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
         assert brief.name == "Porto Gelo"
         call = messages.calls[0]
         assert call["model"] == service.settings.brief_model
@@ -309,7 +315,9 @@ class TestServiceErrorMapping:
     async def test_previous_is_renormalised_before_prompt(self, monkeypatch):
         messages = _install_fake(monkeypatch, result=_FakeResponse("end_turn", make_brief()))
         prev = make_brief(archetype="island", water_side="west")
-        await service.generate_brief(_req(previous=prev, refinement="bigger"), UUID(TEST_USER_ID))
+        await service.generate_brief(
+            _req(previous=prev, refinement="bigger"), UUID(TEST_USER_ID), None
+        )
         assert '"water_side": "all_around"' in messages.calls[0]["messages"][0]["content"]
 
     @pytest.mark.parametrize(
@@ -324,7 +332,7 @@ class TestServiceErrorMapping:
     async def test_stop_reasons(self, monkeypatch, stop, parsed, err):
         _install_fake(monkeypatch, result=_FakeResponse(stop, parsed))
         with pytest.raises(err):
-            await service.generate_brief(_req(), UUID(TEST_USER_ID))
+            await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
 
     @pytest.mark.asyncio
     async def test_parse_validation_error_maps_to_502_without_echo(
@@ -373,7 +381,7 @@ class TestServiceErrorMapping:
         for exc, expected in cases:
             _install_fake(monkeypatch, exc=exc)
             with pytest.raises(expected):
-                await service.generate_brief(_req(), UUID(TEST_USER_ID))
+                await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
 
 
 class TestLimits:
@@ -414,3 +422,172 @@ def test_corpus_has_no_raw_terrain_config_values():
     for path in _KNOWLEDGE_DIR.glob("*.md"):
         hits = forbidden.findall(path.read_text())
         assert not hits, f"{path.name} contains engine internals: {sorted(set(hits))}"
+
+
+# ── CITY-679: kill switch, cross-machine daily cap, max_tokens ─────────
+
+
+class TestKillSwitchAndGlobalCap:
+    @pytest.mark.asyncio
+    async def test_kill_switch_off_is_503_even_with_key(self, client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
+        monkeypatch.setattr(service.settings, "brief_enabled", False)
+        response = await client.post(
+            "/worlds/brief", json={"prompt": "an island town"}, headers={"X-User-Id": TEST_USER_ID}
+        )
+        assert response.status_code == 503
+
+    def test_kill_switch_defaults_off(self):
+        from city_api.config import Settings
+
+        assert Settings().brief_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_global_daily_cap_is_shared_counter(self, db_session, monkeypatch):
+        monkeypatch.setattr(service.settings, "brief_global_daily_limit", 2)
+        await service._check_global_daily_cap(db_session)
+        await service._check_global_daily_cap(db_session)
+        with pytest.raises(service.BriefDailyCapError):
+            await service._check_global_daily_cap(db_session)
+
+    @pytest.mark.asyncio
+    async def test_uses_configured_max_tokens(self, monkeypatch):
+        messages = _install_fake(monkeypatch, result=_FakeResponse("end_turn", make_brief()))
+        await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
+        assert messages.calls[0]["max_tokens"] == service.settings.brief_max_tokens == 4096
+
+
+# ── #487 review follow-ups ──────────────────────────────────────────────
+
+
+class TestReviewFollowups487:
+    @pytest.mark.asyncio
+    async def test_exhausted_daily_cap_is_503_with_clear_message(
+        self, client: AsyncClient, monkeypatch
+    ):
+        _install_fake(monkeypatch, result=_FakeResponse("end_turn", make_brief()))
+
+        async def capped(db):
+            raise service.BriefDailyCapError()
+
+        monkeypatch.setattr(service, "_check_global_daily_cap", capped)
+        response = await client.post(
+            "/worlds/brief", json={"prompt": "a port"}, headers={"X-User-Id": TEST_USER_ID}
+        )
+        assert response.status_code == 503
+        assert "tomorrow" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_daily_cap_rejection_does_not_consume_user_slots(self, monkeypatch):
+        monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
+        monkeypatch.setattr(service.settings, "brief_enabled", True)
+        monkeypatch.setattr(service, "_client", object())
+        user = UUID(int=4242)
+        service._recent.pop(user, None)
+        service._daily.pop(user, None)
+
+        async def capped(db):
+            raise service.BriefDailyCapError()
+
+        monkeypatch.setattr(service, "_check_global_daily_cap", capped)
+        with pytest.raises(service.BriefDailyCapError):
+            await service.generate_brief(_req(), user, None)
+        assert not service._recent.get(user)
+        assert not service._daily.get(user)
+
+    @pytest.mark.asyncio
+    async def test_counter_db_failure_fails_closed_503(self, monkeypatch):
+        from sqlalchemy.exc import OperationalError
+
+        class BrokenDB:
+            async def execute(self, *a, **k):
+                raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+        with pytest.raises(service.BriefUnavailableError):
+            await service._check_global_daily_cap(BrokenDB())
+
+    @pytest.mark.asyncio
+    async def test_json_decode_error_maps_to_502(self, monkeypatch):
+        import json as _json
+
+        _install_fake(monkeypatch, exc=_json.JSONDecodeError("bad", "{", 0))
+        with pytest.raises(service.BriefError) as info:
+            await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
+        assert info.value.status == 502
+
+    @pytest.mark.asyncio
+    async def test_unrelated_value_error_is_not_swallowed(self, monkeypatch):
+        _install_fake(monkeypatch, exc=ValueError("a programming bug"))
+        with pytest.raises(ValueError, match="programming bug"):
+            await service.generate_brief(_req(), UUID(TEST_USER_ID), None)
+
+    def test_overlong_model_output_still_round_trips_as_previous(self):
+        """#498 review: whatever the API returns must be valid as `previous`."""
+        from city_api.brief.schema import BriefRequest
+
+        raw = make_brief(
+            founding_story="A very long story. " * 60,
+            unsupported=[f"Thing {i}: " + "x" * 300 for i in range(12)],
+            feels_like=["Lisbon " * 30] * 5,
+            legend={
+                "water": "w" * 900,
+                "river": "r" * 900,
+                "ground": "g" * 900,
+                "streets": "s" * 900,
+            },
+            name="N" * 200,
+        )
+        brief, _, _ = compile_brief(raw)
+        BriefRequest(prompt="a port", previous=brief, refinement="more hills")  # must not raise
+
+
+class TestConcurrency:
+    @pytest.mark.asyncio
+    async def test_concurrent_burst_from_one_user_respects_per_minute_limit(self, monkeypatch):
+        """#487 review (f9): every await between check and record lets a burst through."""
+        import asyncio
+
+        calls = {"n": 0}
+
+        class CountingMessages:
+            async def parse(self, **kwargs):
+                calls["n"] += 1
+                return _FakeResponse("end_turn", make_brief())
+
+        import types
+
+        monkeypatch.setattr(service.settings, "anthropic_api_key", "sk-test")
+        monkeypatch.setattr(service.settings, "brief_enabled", True)
+        monkeypatch.setattr(service.settings, "brief_rate_limit_per_minute", 8)
+        monkeypatch.setattr(service.settings, "brief_global_limit_per_minute", 1000)
+        monkeypatch.setattr(
+            service,
+            "_client",
+            types.SimpleNamespace(beta=types.SimpleNamespace(messages=CountingMessages())),
+        )
+
+        async def yielding_cap(db):
+            await asyncio.sleep(0)  # a real DB round trip yields to the event loop
+
+        monkeypatch.setattr(service, "_check_global_daily_cap", yielding_cap)
+        user = UUID(int=777)
+        service._recent.pop(user, None)
+        service._daily.pop(user, None)
+        service._global.clear()
+
+        results = await asyncio.gather(
+            *(service.generate_brief(_req(), user, None) for _ in range(50)),
+            return_exceptions=True,
+        )
+        assert calls["n"] == 8
+        assert sum(isinstance(r, service.BriefRateLimitedError) for r in results) == 42
+        service._global.clear()
+
+    def test_previous_size_counts_characters_not_escapes(self):
+        """CJK text must not be over-counted via \\uXXXX escapes."""
+        from city_api.brief.schema import BriefRequest
+
+        story = "港" * 390  # 390 chars; json.dumps(ensure_ascii=True) would be ~2340
+        legend = {k: "坂" * 110 for k in ("water", "river", "ground", "streets")}
+        prev = make_brief(founding_story=story, legend=legend, unsupported=["雪" * 110] * 6)
+        BriefRequest(prompt="a port", previous=prev, refinement="more hills")  # must not raise

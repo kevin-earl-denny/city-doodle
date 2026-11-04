@@ -138,7 +138,7 @@ class BriefRequest(BaseModel):
         if self.refinement is None:
             raise ValueError("previous brief requires a refinement")
         data = self.previous.model_dump(mode="json")
-        if len(json.dumps(data)) > MAX_PREVIOUS_BRIEF_CHARS:
+        if len(json.dumps(data, ensure_ascii=False)) > MAX_PREVIOUS_BRIEF_CHARS:
             raise ValueError("previous brief is too large")
         for item in _iter_strings_and_lists(data):
             if isinstance(item, str) and len(item) > MAX_PREVIOUS_STRING_CHARS:

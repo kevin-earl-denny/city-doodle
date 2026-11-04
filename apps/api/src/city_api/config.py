@@ -23,13 +23,18 @@ class Settings(BaseSettings):
     # Auth mode: "dev" uses X-User-Id header, "production" uses Bearer token
     auth_mode: str = "dev"
 
-    # World Brief (AI terrain prompt, CITY-659). Endpoint returns 503 when unset.
+    # World Brief (AI terrain prompt, CITY-659). Endpoint returns 503 unless
+    # BRIEF_ENABLED=true AND ANTHROPIC_API_KEY is set. BRIEF_ENABLED is the kill switch.
+    brief_enabled: bool = False
     anthropic_api_key: str | None = None
     brief_model: str = "claude-opus-5-5"
     brief_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     brief_rate_limit_per_minute: int = 8
     brief_daily_limit_per_user: int = 60
     brief_global_limit_per_minute: int = 60
+    # Cross-machine cap (Postgres counter). ~$0.02–0.05 per call at low effort.
+    brief_global_daily_limit: int = 500
+    brief_max_tokens: int = 4096
 
     # Logging / Axiom (see city_api.observability). Shipping is off unless
     # AXIOM_API_TOKEN is set; only APP_ENV=production writes to axiom_dataset.
