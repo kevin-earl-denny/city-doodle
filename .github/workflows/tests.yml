@@ -29,11 +29,32 @@ concurrency:
 jobs:
 
   api:
+    # Both backends: SQLite is the local default (fast, no setup); Postgres is
+    # what production runs and the only one that enforces FKs/cascades and
+    # native ENUM types.
     permissions:
       contents: read
-    name: API tests (apps/api)
+    name: API tests (apps/api, ${{ matrix.db }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: city_doodle_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: apps/api
@@ -52,10 +73,15 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
 
-      # In-memory SQLite (tests/conftest.py default). The Postgres path is
-      # broken and tracked in CITY-673.
       - name: pytest
-        run: pytest -q -p no:cacheprovider
+        env:
+          DB: ${{ matrix.db }}
+        run: |
+          # Leave TEST_DATABASE_URL unset for SQLite (tests/conftest.py default).
+          if [ "$DB" = "postgres" ]; then
+            export TEST_DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/city_doodle_test"
+          fi
+          pytest -q -p no:cacheprovider
 
   worker:
     permissions:

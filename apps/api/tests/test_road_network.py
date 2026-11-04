@@ -518,7 +518,9 @@ class TestRoadEdges:
         assert len(response.json()) == 1
 
     @pytest.mark.asyncio
-    @pytest.mark.skipif(IS_SQLITE, reason="CITY-673: SQLite tests don't enforce ON DELETE CASCADE")
+    @pytest.mark.skipif(
+        IS_SQLITE, reason="SQLite doesn't enforce ON DELETE CASCADE; runs in the Postgres CI job"
+    )
     async def test_deleting_node_cascades_to_edges(self, client: AsyncClient):
         """Test that deleting a node also deletes connected edges."""
         node1_id, node2_id = await self._create_nodes(client)
