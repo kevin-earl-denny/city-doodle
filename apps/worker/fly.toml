@@ -9,6 +9,11 @@ primary_region = "iad"
 
 [env]
   LOG_LEVEL = "info"
+  # APP_ENV picks the Axiom dataset (CITY-642): only "production" writes to
+  # AXIOM_DATASET (default city-doodle). Logs ship only when the AXIOM_API_TOKEN
+  # secret is set: fly secrets set AXIOM_API_TOKEN=xaat-... -a city-doodle-worker
+  # Optional secrets/env: AXIOM_DATASET, AXIOM_ORG_ID (personal tokens only).
+  APP_ENV = "production"
 
 # Worker process - no HTTP service, just runs continuously
 [processes]

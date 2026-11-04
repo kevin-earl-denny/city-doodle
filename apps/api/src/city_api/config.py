@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     brief_daily_limit_per_user: int = 60
     brief_global_limit_per_minute: int = 60
 
+    # Logging / Axiom (see city_api.observability). Shipping is off unless
+    # AXIOM_API_TOKEN is set; only APP_ENV=production writes to axiom_dataset.
+    app_env: str = "development"
+    log_level: str = "info"
+    axiom_api_token: str | None = None
+    axiom_org_id: str | None = None
+    axiom_dataset: str = "city-doodle"
+    axiom_dataset_dev: str | None = None
+
     # CORS configuration
     frontend_url: str = "http://localhost:5173"
     cors_origins: list[str] = [

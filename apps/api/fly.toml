@@ -13,6 +13,11 @@ primary_region = "iad"
 [env]
   PORT = "8080"
   LOG_LEVEL = "info"
+  # APP_ENV picks the Axiom dataset (CITY-642): only "production" writes to
+  # AXIOM_DATASET (default city-doodle). Logs ship only when the AXIOM_API_TOKEN
+  # secret is set: fly secrets set AXIOM_API_TOKEN=xaat-... -a city-doodle-api
+  # Optional secrets/env: AXIOM_DATASET, AXIOM_ORG_ID (personal tokens only).
+  APP_ENV = "production"
 
 [http_service]
   internal_port = 8080

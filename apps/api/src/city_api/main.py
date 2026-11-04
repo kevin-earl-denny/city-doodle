@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError, DataError, IntegrityError, OperationalError
 
 from city_api.config import settings
+from city_api.observability import configure_axiom_logging
+from city_api.request_logging import RequestLoggingMiddleware
 from city_api.routers import auth_router
 from city_api.routes import (
     brief_router,
@@ -30,6 +32,21 @@ from city_api.routes import (
 )
 
 logger = logging.getLogger(__name__)
+
+# CITY-642: ship logs to Axiom when AXIOM_API_TOKEN is set; a no-op otherwise. Runs at
+# import, i.e. after uvicorn has applied its own logging config, so attaching to the
+# non-propagating `uvicorn` logger also ships uvicorn's startup/error lines.
+configure_axiom_logging(
+    service="api",
+    app_env=settings.app_env,
+    api_token=settings.axiom_api_token,
+    org_id=settings.axiom_org_id,
+    dataset=settings.axiom_dataset,
+    dataset_dev=settings.axiom_dataset_dev,
+    log_level=settings.log_level,
+    extra_loggers=("uvicorn",),
+    preserve_stderr_fallback=True,
+)
 
 app = FastAPI(
     title="City Doodle API",
@@ -57,6 +74,11 @@ app.add_middleware(
 
 # CITY-511: Compress responses > 1KB for 50-80% bandwidth reduction on JSON payloads
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# CITY-642: added last so it is the outermost user middleware (just inside Starlette's
+# ServerErrorMiddleware): it times the whole stack, sees the final status, and binds
+# its request_id for every log line emitted inside the request.
+app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(auth_router)
 app.include_router(cities_router)

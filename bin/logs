@@ -1,0 +1,1369 @@
+#!/usr/bin/env python3
+# ruff: noqa: UP017
+# (UP017 wants `datetime.UTC` instead of `timezone.utc`. We keep the explicit
+# `timezone.utc` form so this CLI runs on `#!/usr/bin/env python3` even when
+# system python is < 3.11. The project pyproject targets py312, but bin/logs
+# is a standalone tool that may be invoked from any shell.)
+"""bin/logs — Query city-doodle API and worker logs in Axiom.
+
+Self-contained CLI for investigating the Fly.io apps' logs (city-doodle-api and
+city-doodle-worker ship structured JSON to Axiom; see CITY-642). Queries the
+production dataset (`city-doodle`) by default; pass `--dev` to query
+AXIOM_DATASET_DEV, or `--dataset <name>` for an explicit one. Stdlib-only.
+
+Every line has `service` ("api" or "worker"), `level`, `logger_name`, `message`.
+API request lines: event == 'request', method, route (template), path, status,
+duration_ms, request_id. Worker job lines: job_id, job_type, world_id, and
+lifecycle events job_started / job_finished (outcome, duration_ms) /
+job_retry_scheduled / job_failed_permanently. Exceptions add exc_type,
+exc_message, exc_traceback.
+
+Run `bin/logs help` for the full guide, `bin/logs examples` for APL recipes,
+and `bin/logs <subcommand> --help` for per-subcommand flags.
+
+Exit codes:
+    0  success
+    1  user / config error  (bad args, missing token, bad APL syntax, 4xx)
+    2  parser drift          (Axiom returned data but the formatter dropped it
+                              — almost always means the response shape changed)
+    3  network / API error   (timeout, DNS, 5xx, JSON decode failure)
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import json
+import os
+import re
+import sys
+import textwrap
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+DEFAULT_DATASET = "city-doodle"
+# There is no default dev dataset: the apps only ship off-production when
+# AXIOM_DATASET_DEV is set, so `--dev` requires it too.
+# AXIOM_ORG_ID is optional: advanced (xaat-) API tokens don't need the org header;
+# personal tokens do.
+AXIOM_APL_URL = "https://api.axiom.co/v1/datasets/_apl?format=tabular"
+
+# Fields shown in pretty output when --fields is not set. Order matters: this
+# is also the column order in csv mode.
+DEFAULT_PRETTY_FIELDS = [
+    "_time",
+    "level",
+    "service",
+    "logger_name",
+    "method",
+    "route",
+    "status",
+    "duration_ms",
+    "event",
+    "message",
+    "request_id",
+    "job_type",
+    "job_id",
+    "world_id",
+    "outcome",
+]
+
+NETWORK_TIMEOUT_S = 60
+
+
+# ---------------------------------------------------------------------------
+# Color helpers (ANSI escapes; respect NO_COLOR and --no-color)
+
+
+class Color:
+    RESET = "\033[0m"
+    DIM = "\033[2m"
+    BOLD = "\033[1m"
+    RED = "\033[31m"
+    YELLOW = "\033[33m"
+    GREEN = "\033[32m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
+
+
+def color_enabled(no_color_flag: bool) -> bool:
+    if no_color_flag:
+        return False
+    if os.environ.get("NO_COLOR"):
+        return False
+    return sys.stdout.isatty()
+
+
+def paint(s: str, code: str, enabled: bool) -> str:
+    if not enabled or not s:
+        return s
+    return f"{code}{s}{Color.RESET}"
+
+
+# ---------------------------------------------------------------------------
+# Errors
+
+
+class CLIError(Exception):
+    """User-facing error. message is printed to stderr; exit code 1."""
+
+    exit_code = 1
+
+
+class ParserDriftError(CLIError):
+    exit_code = 2
+
+
+class NetworkError(CLIError):
+    exit_code = 3
+
+
+# ---------------------------------------------------------------------------
+# Token / config loading
+
+
+def project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def env_files() -> list[Path]:
+    """`.env.local` here, then in the main checkout when run from a git worktree.
+
+    Agents work in `../city-doodle-worktrees/<ticket>`, which has no `.env.local`;
+    a worktree's `.git` is a file pointing at `<main>/.git/worktrees/<name>`.
+    """
+    root = project_root()
+    files = [root / ".env.local"]
+    git = root / ".git"
+    if git.is_file():
+        try:
+            line = git.read_text().strip()
+        except OSError:
+            line = ""
+        if line.startswith("gitdir:"):
+            gitdir = Path(line.partition(":")[2].strip())
+            if not gitdir.is_absolute():
+                gitdir = (root / gitdir).resolve()
+            files.append(gitdir.parent.parent.parent / ".env.local")
+    return files
+
+
+def load_value_from_env_file(env_file: Path, key: str) -> str | None:
+    """Read KEY=value from a .env-style file, ignoring quotes and comments."""
+    if not env_file.exists():
+        return None
+    try:
+        for line in env_file.read_text().splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("export "):
+                stripped = stripped[len("export ") :].strip()
+            if "=" not in stripped:
+                continue
+            k, _, v = stripped.partition("=")
+            if k.strip() == key:
+                value = v.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                    value = value[1:-1]
+                return value or None
+    except OSError as exc:
+        raise CLIError(f"Could not read {env_file}: {exc}") from exc
+    return None
+
+
+def lookup(key: str) -> str | None:
+    """$KEY from the environment, else from the first `.env.local` that sets it."""
+    value = os.environ.get(key)
+    if value:
+        return value
+    for env_file in env_files():
+        value = load_value_from_env_file(env_file, key)
+        if value:
+            return value
+    return None
+
+
+def _resolve_token() -> tuple[str | None, str | None]:
+    # The apps' AXIOM_API_TOKEN may be ingest-only (403 on queries), so a separate
+    # read-scoped AXIOM_QUERY_TOKEN wins when set.
+    for name in ("AXIOM_QUERY_TOKEN", "AXIOM_API_TOKEN"):
+        value = lookup(name)
+        if value:
+            return value, name
+    return None, None
+
+
+def get_config() -> tuple[str, str, str]:
+    """Return (token, dataset, org). Raises CLIError if the token is missing.
+
+    `org` may be empty: advanced (xaat-) tokens don't need X-Axiom-Org-Id.
+    """
+    token, _ = _resolve_token()
+    dataset = lookup("AXIOM_DATASET") or DEFAULT_DATASET
+    org = lookup("AXIOM_ORG_ID") or ""
+
+    if not token:
+        searched = ", ".join(str(f) for f in env_files())
+        raise CLIError(
+            "No Axiom token found.\n"
+            f"  Looked for $AXIOM_QUERY_TOKEN / $AXIOM_API_TOKEN in env and {searched}.\n"
+            "  Fix: add AXIOM_QUERY_TOKEN=xaat-... (a token with Query permission on the "
+            "dataset) to .env.local, or `export` it for this shell."
+        )
+
+    return token, dataset, org
+
+
+def resolve_dataset(args: argparse.Namespace, dataset: str) -> str:
+    """Apply the `--dataset` / `--dev` override to the configured dataset."""
+    explicit = getattr(args, "dataset", None)
+    if explicit:
+        return explicit
+    if getattr(args, "dev", False):
+        dev = lookup("AXIOM_DATASET_DEV")
+        if not dev:
+            raise CLIError(
+                "--dev needs AXIOM_DATASET_DEV (env or .env.local); none is set.\n"
+                "  Dev/local logs only ship when that dataset is configured. "
+                "Use --dataset NAME to query an explicit dataset."
+            )
+        return dev
+    return dataset
+
+
+# ---------------------------------------------------------------------------
+# Time parsing
+
+
+_DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
+
+
+def parse_duration_to_seconds(s: str) -> int:
+    """Parse '30s' / '5m' / '2h' / '7d' / '1w' / bare-int-as-hours."""
+    s = s.strip()
+    m = _DURATION_RE.match(s)
+    if m:
+        n, unit = int(m.group(1)), m.group(2).lower()
+        return n * {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
+    if s.isdigit():
+        return int(s) * 3600
+    raise CLIError(
+        f"Cannot parse duration {s!r}. Use 30s, 15m, 2h, 7d, 1w "
+        "(or pass an ISO-8601 timestamp like 2026-05-01T00:00:00Z)."
+    )
+
+
+def parse_time_arg(s: str | None, *, default_now: bool = False) -> datetime:
+    """Parse --since / --until.
+
+    Accepts:
+      - duration strings (30s, 5m, 2h, 7d, 1w) — relative to now
+      - ISO-8601 timestamps (with 'T', or YYYY-MM-DD)
+      - 'now', 'today' (00:00 UTC), 'yesterday' (00:00 UTC)
+    """
+    now = datetime.now(timezone.utc)
+    if s is None:
+        return now if default_now else now - timedelta(hours=1)
+    s = s.strip()
+    lower = s.lower()
+    if lower == "now":
+        return now
+    if lower == "today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if lower == "yesterday":
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return midnight - timedelta(days=1)
+
+    if "T" in s or re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        try:
+            iso = s.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError as exc:
+            raise CLIError(f"Cannot parse ISO-8601 timestamp {s!r}: {exc}") from exc
+
+    seconds = parse_duration_to_seconds(s)
+    return now - timedelta(seconds=seconds)
+
+
+def iso_z(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# APL escaping
+
+
+def apl_escape(s: str) -> str:
+    """Escape a string literal for APL single-quote context."""
+    return s.replace("\\", "\\\\").replace("'", "\\'")
+
+
+# ---------------------------------------------------------------------------
+# HTTP
+
+
+def post_apl(token: str, org: str, body: dict) -> dict:
+    payload = json.dumps(body).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "city-doodle/bin/logs",
+    }
+    if org:
+        headers["X-Axiom-Org-Id"] = org
+    req = urllib.request.Request(AXIOM_APL_URL, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_S) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            err_body = ""
+        msg = _humanize_http_error(exc.code, err_body, body, org)
+        if 400 <= exc.code < 500:
+            raise CLIError(msg) from exc
+        raise NetworkError(msg) from exc
+    except urllib.error.URLError as exc:
+        raise NetworkError(
+            f"Network error reaching Axiom ({AXIOM_APL_URL}): {exc.reason}.\n"
+            "  Fix: check connectivity (`curl -I https://api.axiom.co`); "
+            "rerun with --verbose to see the request body."
+        ) from exc
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        snippet = raw[:500].decode("utf-8", errors="replace")
+        raise NetworkError(
+            f"Axiom returned non-JSON response: {exc.msg}.\n  First 500 bytes: {snippet!r}"
+        ) from exc
+
+
+def _humanize_http_error(code: int, body: str, request_body: dict, org: str) -> str:
+    detail = body.strip()[:500] if body else ""
+    apl_preview = (request_body.get("apl") or "")[:200]
+    base = f"Axiom API returned HTTP {code}."
+    hint = ""
+    _, token_name = _resolve_token()
+    if code == 401:
+        hint = (
+            f"  Token rejected ({token_name}). It may be expired or revoked, or (for a "
+            "personal token) AXIOM_ORG_ID may be missing. Rotate via Axiom UI "
+            "→ Settings → API Tokens."
+        )
+    elif code == 403:
+        hint = (
+            f"  Forbidden: {token_name} does not have query (read) permission on this "
+            "dataset. The apps' AXIOM_API_TOKEN is typically ingest-only.\n"
+            "  Fix: create an Axiom API token with Query access to the dataset and put it "
+            "in .env.local as AXIOM_QUERY_TOKEN=xaat-... (bin/logs prefers it over "
+            "AXIOM_API_TOKEN)." + (f" AXIOM_ORG_ID is {org!r}; check it too." if org else "")
+        )
+    elif code == 404:
+        hint = (
+            "  Endpoint or dataset not found. Check AXIOM_DATASET and that "
+            "the dataset exists in this org."
+        )
+    elif code == 400:
+        hint = (
+            "  Bad request — usually an APL syntax error.\n"
+            f"  APL sent: {apl_preview!r}\n"
+            "  Tip: try the same query in the Axiom UI to see syntax markers, "
+            "or rerun with --dry-run to print the APL without executing."
+        )
+    elif code == 429:
+        hint = "  Rate limited by Axiom. Back off and retry."
+    if detail:
+        base += f"\n  Body: {detail}"
+    if hint:
+        base += "\n" + hint
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Response parsing — column-major tabular format
+
+
+def parse_tabular_response(data: dict) -> tuple[list[dict[str, Any]], dict]:
+    """Convert Axiom tabular response into row dicts + status info.
+
+    Tabular response shape (THE bug-fix this whole rewrite exists for):
+        data["tables"][0]["fields"]  = [{"name": str, "type": str}, ...]
+        data["tables"][0]["columns"] = [[v0, v1, ...], [v0, v1, ...], ...]
+            (column-major: columns[i] is the array of values for fields[i])
+
+    There is no "rows" key. The previous bash CLI looked for "rows" and
+    therefore always reported "No results." even for non-empty datasets.
+    """
+    if "error" in data and isinstance(data["error"], str):
+        raise CLIError(f"Axiom error: {data['error']}")
+
+    tables = data.get("tables") or []
+    status = data.get("status") or {}
+    if not tables:
+        return [], status
+
+    table = tables[0]
+    fields = [f["name"] for f in table.get("fields", [])]
+    cols = table.get("columns") or []
+
+    if not fields:
+        return [], status
+
+    if len(cols) != len(fields):
+        raise ParserDriftError(
+            f"Axiom returned {len(fields)} fields but {len(cols)} columns. "
+            "Response shape may have changed."
+        )
+
+    n_rows = len(cols[0]) if cols else 0
+    rows: list[dict[str, Any]] = [
+        {fields[j]: cols[j][i] for j in range(len(fields))} for i in range(n_rows)
+    ]
+
+    rows_matched = status.get("rowsMatched") or 0
+    if rows_matched > 0 and n_rows == 0:
+        raise ParserDriftError(
+            f"Parser drift: status.rowsMatched={rows_matched} but the formatter "
+            "produced 0 rows. Axiom's response shape may have changed (expected "
+            "tables[0].fields + column-major tables[0].columns)."
+        )
+
+    return rows, status
+
+
+# ---------------------------------------------------------------------------
+# Output formatting
+
+
+def _truncate(s: str, n: int = 200) -> str:
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _stringify(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, default=str)
+    return str(v)
+
+
+def format_pretty(
+    rows: list[dict[str, Any]],
+    *,
+    fields: list[str] | None,
+    all_fields: bool,
+    use_color: bool,
+) -> str:
+    if not rows:
+        return ""
+    out: list[str] = []
+    shown = {
+        "_time",
+        "level",
+        "service",
+        "logger_name",
+        "method",
+        "route",
+        "path",
+        "status",
+        "duration_ms",
+        "event",
+        "message",
+        "request_id",
+        "job_type",
+        "job_id",
+        "world_id",
+        "outcome",
+    }
+    for r in rows:
+        ts = _stringify(r.get("_time", ""))[:19]
+        level = _stringify(r.get("level", "")).lower()
+        service = _stringify(r.get("service", ""))
+        logger = _stringify(r.get("logger_name", ""))
+        method = _stringify(r.get("method", ""))
+        # Route template (/worlds/{world_id}) groups better than the raw path.
+        route = _stringify(r.get("route") or r.get("path", ""))
+        status = _stringify(r.get("status", ""))
+        duration = _stringify(r.get("duration_ms", ""))
+        event = _stringify(r.get("event", ""))
+        msg = _stringify(r.get("message", ""))
+        request_id = _stringify(r.get("request_id", ""))
+        job_type = _stringify(r.get("job_type", ""))
+        job_id = _stringify(r.get("job_id", ""))
+        world_id = _stringify(r.get("world_id", ""))
+        outcome = _stringify(r.get("outcome", ""))
+
+        level_color = {
+            "error": Color.RED,
+            "critical": Color.RED + Color.BOLD,
+            "warning": Color.YELLOW,
+            "info": Color.DIM,
+            "debug": Color.DIM,
+        }.get(level, "")
+        status_color = ""
+        if status.isdigit():
+            n = int(status)
+            if n >= 500:
+                status_color = Color.RED
+            elif n >= 400:
+                status_color = Color.YELLOW
+            elif n >= 200:
+                status_color = Color.GREEN
+        outcome_color = {"completed": Color.GREEN, "error": Color.RED}.get(outcome, "")
+
+        parts: list[str] = []
+        if ts:
+            parts.append(paint(ts, Color.DIM, use_color))
+        if level:
+            parts.append(paint(f"[{level.upper()}]", level_color, use_color))
+        if service:
+            parts.append(paint(service, Color.BLUE, use_color))
+        if logger:
+            parts.append(paint(f"({logger})", Color.CYAN, use_color))
+        if method and route:
+            parts.append(f"{method} {route}")
+        if status:
+            parts.append(paint(f"→ {status}", status_color, use_color))
+        if job_type:
+            parts.append(f"job={job_type}")
+        if event and event != "request":
+            parts.append(f"| {event}")
+        if outcome:
+            parts.append(paint(outcome, outcome_color, use_color))
+        if duration:
+            parts.append(paint(f"({duration}ms)", Color.MAGENTA, use_color))
+        # Request lines' message just repeats method/route/status.
+        if msg and event != "request":
+            parts.append(f"| {_truncate(msg, 200)}")
+        if request_id:
+            parts.append(paint(f"rid={request_id}", Color.DIM, use_color))
+        if job_id:
+            parts.append(paint(f"job_id={job_id}", Color.DIM, use_color))
+        if world_id:
+            parts.append(paint(f"world={world_id}", Color.DIM, use_color))
+
+        out.append(" ".join(p for p in parts if p))
+
+        extra_fields: list[str] = []
+        if all_fields:
+            extra_fields = [
+                k
+                for k in r.keys()
+                if k not in shown and not k.startswith("_") and r[k] not in (None, "")
+            ]
+        elif fields:
+            extra_fields = [k for k in fields if k not in shown and r.get(k) not in (None, "")]
+        for k in extra_fields:
+            v = _truncate(_stringify(r[k]))
+            label = paint(f"  {k}=", Color.DIM, use_color)
+            out.append(f"{label}{v}")
+    return "\n".join(out)
+
+
+def _project(rows: list[dict[str, Any]], fields: list[str] | None) -> list[dict[str, Any]]:
+    if not fields:
+        return rows
+    return [{f: r.get(f) for f in fields} for r in rows]
+
+
+def format_jsonl(rows: list[dict[str, Any]], fields: list[str] | None = None) -> str:
+    rows = _project(rows, fields)
+    return "\n".join(json.dumps(r, default=str) for r in rows)
+
+
+def format_json(rows: list[dict[str, Any]], fields: list[str] | None = None) -> str:
+    rows = _project(rows, fields)
+    return json.dumps(rows, default=str, indent=2)
+
+
+def format_csv(rows: list[dict[str, Any]], fields: list[str] | None) -> str:
+    if not rows:
+        return ""
+    if fields is None:
+        seen = list(DEFAULT_PRETTY_FIELDS)
+        for r in rows:
+            for k in r:
+                if k not in seen:
+                    seen.append(k)
+        fields = seen
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(fields)
+    for r in rows:
+        w.writerow([_stringify(r.get(f, "")) for f in fields])
+    return buf.getvalue().rstrip("\n")
+
+
+def format_raw(data: dict) -> str:
+    return json.dumps(data, default=str, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Stats
+
+
+def render_stats(status: dict, *, use_color: bool) -> str:
+    if not status:
+        return ""
+    fields = [
+        ("rowsMatched", "matched"),
+        ("rowsExamined", "examined"),
+        ("blocksExamined", "blocks"),
+        ("elapsedTime", "elapsed_us"),
+        ("isPartial", "partial"),
+    ]
+    parts = [f"{label}={status[key]}" for key, label in fields if key in status]
+    return paint("  [stats] " + " ".join(parts), Color.DIM, use_color)
+
+
+# ---------------------------------------------------------------------------
+# Core query runner
+
+
+def run_query(
+    apl: str,
+    *,
+    since: datetime,
+    until: datetime,
+    args: argparse.Namespace,
+) -> int:
+    if args.dry_run:
+        print(f"# APL ({iso_z(since)} → {iso_z(until)})")
+        print(apl)
+        return 0
+
+    token, _dataset, org = get_config()
+    body = {"apl": apl, "startTime": iso_z(since), "endTime": iso_z(until)}
+    data = post_apl(token, org, body)
+
+    fmt = args.format
+    if fmt == "auto":
+        fmt = "pretty" if sys.stdout.isatty() else "jsonl"
+
+    if fmt == "raw":
+        print(format_raw(data))
+        return 0
+
+    rows, status = parse_tabular_response(data)
+    use_color = color_enabled(args.no_color)
+
+    if not rows:
+        if fmt == "pretty":
+            print("No results.")
+        if args.verbose:
+            print(render_stats(status, use_color=use_color), file=sys.stderr)
+        return 0
+
+    fields_list = [f.strip() for f in args.fields.split(",") if f.strip()] if args.fields else None
+
+    if fmt == "pretty":
+        print(
+            format_pretty(
+                rows,
+                fields=fields_list,
+                all_fields=args.all_fields,
+                use_color=use_color,
+            )
+        )
+        rng = f"{iso_z(since)} → {iso_z(until)}"
+        footer = f"\n--- {len(rows)} result{'s' if len(rows) != 1 else ''} ({rng}) ---"
+        print(paint(footer, Color.DIM, use_color))
+    elif fmt == "jsonl":
+        print(format_jsonl(rows, fields_list))
+    elif fmt == "json":
+        print(format_json(rows, fields_list))
+    elif fmt == "csv":
+        print(format_csv(rows, fields_list))
+
+    if args.verbose:
+        print(render_stats(status, use_color=use_color), file=sys.stderr)
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand APL builders
+
+
+def _base(args: argparse.Namespace, dataset: str) -> str:
+    """`['dataset']`, narrowed to one app when --service is given."""
+    service = getattr(args, "service", None)
+    if service:
+        return f"['{dataset}'] | where service == '{apl_escape(service)}'"
+    return f"['{dataset}']"
+
+
+def cmd_errors(args: argparse.Namespace, dataset: str) -> str:
+    # Request lines are logged at info, so 5xx are matched by status, not level.
+    return (
+        f"{_base(args, dataset)} "
+        "| where level == 'error' or level == 'critical' or toint(status) >= 500 "
+        f"| sort by _time desc | take {args.limit}"
+    )
+
+
+def cmd_slow(args: argparse.Namespace, dataset: str) -> str:
+    return (
+        f"['{dataset}'] | where event == 'request' and duration_ms > {args.threshold} "
+        f"| sort by duration_ms desc | take {args.limit}"
+    )
+
+
+def cmd_jobs(args: argparse.Namespace, dataset: str) -> str:
+    """Worker job lines, optionally for one job type / job id / world, or failures only."""
+    clauses = ["isnotempty(job_id)"]
+    if args.type:
+        clauses.append(f"job_type == '{apl_escape(args.type)}'")
+    if args.job:
+        clauses.append(f"job_id == '{apl_escape(args.job)}'")
+    if args.world:
+        clauses.append(f"world_id == '{apl_escape(args.world)}'")
+    if args.failed:
+        clauses.append(
+            "((event == 'job_finished' and outcome == 'error') "
+            "or event == 'job_failed_permanently')"
+        )
+    order = "asc" if args.job else "desc"
+    return (
+        f"['{dataset}'] | where {' and '.join(clauses)} | sort by _time {order} | take {args.limit}"
+    )
+
+
+def cmd_query(args: argparse.Namespace, dataset: str) -> str:
+    return (
+        f"{_base(args, dataset)} | where {args.where_clause} "
+        f"| sort by _time desc | take {args.limit}"
+    )
+
+
+def cmd_apl(args: argparse.Namespace, dataset: str) -> str:
+    apl = args.apl_query
+    if apl == "-":
+        apl = sys.stdin.read().strip()
+        if not apl:
+            raise CLIError("apl - was given but stdin was empty.")
+    return apl
+
+
+def cmd_tail(args: argparse.Namespace, dataset: str) -> str:
+    return f"{_base(args, dataset)} | sort by _time desc | take {args.limit}"
+
+
+def cmd_request(args: argparse.Namespace, dataset: str) -> str:
+    rid = apl_escape(args.request_id)
+    return f"['{dataset}'] | where request_id == '{rid}' | sort by _time asc | take {args.limit}"
+
+
+def cmd_path(args: argparse.Namespace, dataset: str) -> str:
+    pat = apl_escape(args.path_prefix)
+    return (
+        f"['{dataset}'] | where event == 'request' and path startswith '{pat}' "
+        f"| sort by _time desc | take {args.limit}"
+    )
+
+
+def cmd_endpoints(args: argparse.Namespace, dataset: str) -> str:
+    return (
+        f"['{dataset}'] | where event == 'request' and isnotnull(duration_ms) "
+        f"| summarize n=count(), errors_5xx=countif(toint(status) >= 500), "
+        f"p50=percentile(duration_ms,50), p95=percentile(duration_ms,95), "
+        f"p99=percentile(duration_ms,99), max=max(duration_ms) by method, route "
+        f"| sort by p95 desc | take {args.limit}"
+    )
+
+
+def run_count(args: argparse.Namespace) -> int:
+    """Special runner for `count`: print just the matched-row count."""
+    if args.dry_run:
+        token, dataset, org = "", lookup("AXIOM_DATASET") or DEFAULT_DATASET, ""
+    else:
+        token, dataset, org = get_config()
+    dataset = resolve_dataset(args, dataset)
+    where = args.where_clause or "true"
+    apl = f"['{dataset}'] | where {where} | summarize n=count()"
+    since = parse_time_arg(args.since)
+    until = (
+        parse_time_arg(args.until, default_now=True) if args.until else datetime.now(timezone.utc)
+    )
+    if args.dry_run:
+        print(f"# APL ({iso_z(since)} → {iso_z(until)})")
+        print(apl)
+        return 0
+    body = {"apl": apl, "startTime": iso_z(since), "endTime": iso_z(until)}
+    data = post_apl(token, org, body)
+    rows, status = parse_tabular_response(data)
+    n = rows[0]["n"] if rows else 0
+    fmt = args.format
+    if fmt == "auto":
+        fmt = "pretty" if sys.stdout.isatty() else "jsonl"
+    if fmt in ("json", "jsonl"):
+        print(
+            json.dumps({"count": n, "where": where, "since": iso_z(since), "until": iso_z(until)})
+        )
+    elif fmt == "raw":
+        print(format_raw(data))
+    elif fmt == "csv":
+        print("count")
+        print(n)
+    else:
+        print(n)
+    if args.verbose:
+        print(
+            render_stats(status, use_color=color_enabled(args.no_color)),
+            file=sys.stderr,
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Health check
+
+
+def run_health(args: argparse.Namespace) -> int:
+    use_color = color_enabled(args.no_color)
+    ok = paint("OK", Color.GREEN, use_color)
+    fail = paint("FAIL", Color.RED, use_color)
+
+    print("Axiom log shipping health check")
+    print("-" * 40)
+
+    try:
+        token, dataset, org = get_config()
+        dataset = resolve_dataset(args, dataset)
+    except CLIError as exc:
+        print(f"  Token: {fail}")
+        print(f"  {exc}")
+        return exc.exit_code
+    _, token_name = _resolve_token()
+    print(f"  Token loaded: {ok} ({token_name})")
+    print(f"  Dataset:      {dataset}")
+    print(f"  Org ID:       {org or '(not set; not needed for xaat- tokens)'}")
+
+    body = {
+        "apl": f"['{dataset}'] | take 1",
+        "startTime": iso_z(datetime.now(timezone.utc) - timedelta(days=1)),
+        "endTime": iso_z(datetime.now(timezone.utc)),
+    }
+    try:
+        data = post_apl(token, org, body)
+    except CLIError as exc:
+        print(f"  API call:     {fail}")
+        print(f"  {exc}")
+        return exc.exit_code
+    print(f"  API call:     {ok}")
+
+    try:
+        rows, status = parse_tabular_response(data)
+    except CLIError as exc:
+        print(f"  Parser:       {fail}")
+        print(f"  {exc}")
+        return exc.exit_code
+
+    matched = status.get("rowsMatched", 0)
+    if rows:
+        print(f"  Recent data:  {ok} (1 row sampled, {matched} matched in 24h)")
+    else:
+        warn = paint("WARN", Color.YELLOW, use_color)
+        print(f"  Recent data:  {warn} (no rows in last 24h — backend may be quiet)")
+
+    table = (data.get("tables") or [{}])[0]
+    has_fields = bool(table.get("fields"))
+    has_columns = "columns" in table
+    has_rows_key = "rows" in table
+    if has_fields and has_columns and not has_rows_key:
+        print(f"  Response shape: {ok} (column-major as expected)")
+    else:
+        print(f"  Response shape: {fail} (unexpected keys present)")
+        print(f"    fields={has_fields} columns={has_columns} rows={has_rows_key}")
+        return 1
+
+    print()
+    print(paint("All checks passed.", Color.GREEN, use_color))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Summary
+
+
+def run_summary(args: argparse.Namespace) -> int:
+    token, dataset, org = get_config()
+    dataset = resolve_dataset(args, dataset)
+    use_color = color_enabled(args.no_color)
+    since = parse_time_arg(args.since)
+    until = (
+        parse_time_arg(args.until, default_now=True) if args.until else datetime.now(timezone.utc)
+    )
+    rng = f"{iso_z(since)} → {iso_z(until)}"
+
+    def run(apl: str) -> tuple[list[dict], dict]:
+        body = {"apl": apl, "startTime": iso_z(since), "endTime": iso_z(until)}
+        return parse_tabular_response(post_apl(token, org, body))
+
+    queries = {
+        "errors": (
+            f"['{dataset}'] | where level == 'error' or level == 'critical' | summarize n=count()"
+        ),
+        "5xx": (
+            f"['{dataset}'] | where event == 'request' and toint(status) >= 500 "
+            "| summarize n=count()"
+        ),
+        "slow": (
+            f"['{dataset}'] | where event == 'request' and duration_ms > {args.threshold} "
+            "| summarize n=count()"
+        ),
+        "total": f"['{dataset}'] | where event == 'request' | summarize n=count()",
+        "top_paths": (
+            f"['{dataset}'] | where event == 'request' "
+            "| summarize n=count(), p95=percentile(duration_ms,95) by route "
+            "| sort by p95 desc | take 5"
+        ),
+        "top_errors": (
+            f"['{dataset}'] | where level == 'error' or level == 'critical' "
+            "| summarize n=count() by service, logger_name | sort by n desc | take 5"
+        ),
+        "jobs": (
+            f"['{dataset}'] | where event == 'job_finished' "
+            "| summarize n=count(), errors=countif(outcome == 'error'), "
+            "p95=percentile(duration_ms,95) by job_type | sort by n desc"
+        ),
+    }
+
+    print(paint(f"Summary  ({rng})", Color.BOLD, use_color))
+    print("-" * 60)
+
+    err_rows, _ = run(queries["errors"])
+    err_n = err_rows[0]["n"] if err_rows else 0
+    fivexx_rows, _ = run(queries["5xx"])
+    fivexx_n = fivexx_rows[0]["n"] if fivexx_rows else 0
+    slow_rows, _ = run(queries["slow"])
+    slow_n = slow_rows[0]["n"] if slow_rows else 0
+    total_rows, _ = run(queries["total"])
+    total_n = total_rows[0]["n"] if total_rows else 0
+
+    err_color = Color.RED if err_n > 0 else Color.GREEN
+    slow_color = Color.YELLOW if slow_n > 0 else Color.GREEN
+    print(f"  errors:         {paint(str(err_n), err_color, use_color)}")
+    fivexx_color = Color.RED if fivexx_n > 0 else Color.GREEN
+    print(f"  5xx responses:  {paint(str(fivexx_n), fivexx_color, use_color)}")
+    print(f"  slow requests:  {paint(str(slow_n), slow_color, use_color)} (>{args.threshold}ms)")
+    print(f"  total requests: {total_n}")
+
+    print()
+    print(paint("Top routes by p95:", Color.BOLD, use_color))
+    top_rows, _ = run(queries["top_paths"])
+    if top_rows:
+        for r in top_rows:
+            route = str(r.get("route") or "<unmatched>")
+            print(f"  {route:<60} p95={r.get('p95', '-')}ms  n={r.get('n', '-')}")
+    else:
+        print("  (no requests in window)")
+
+    print()
+    print(paint("Top error sources:", Color.BOLD, use_color))
+    top_err, _ = run(queries["top_errors"])
+    if top_err:
+        for r in top_err:
+            src = f"{r.get('service') or '?'} {r.get('logger_name') or '<null>'}"
+            print(f"  {src:<60} n={r.get('n', '-')}")
+    else:
+        print("  (no errors in window)")
+
+    print()
+    print(paint("Worker jobs by type:", Color.BOLD, use_color))
+    job_rows, _ = run(queries["jobs"])
+    if job_rows:
+        for r in job_rows:
+            print(
+                f"  {str(r.get('job_type') or '<null>'):<30} n={r.get('n', '-')}  "
+                f"errors={r.get('errors', '-')}  p95={r.get('p95', '-')}ms"
+            )
+    else:
+        print("  (no jobs finished in window)")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Fields listing
+
+
+def run_fields(args: argparse.Namespace) -> int:
+    token, dataset, org = get_config()
+    dataset = resolve_dataset(args, dataset)
+    body = {
+        "apl": f"['{dataset}'] | take 1",
+        "startTime": iso_z(datetime.now(timezone.utc) - timedelta(hours=1)),
+        "endTime": iso_z(datetime.now(timezone.utc)),
+    }
+    data = post_apl(token, org, body)
+    table = (data.get("tables") or [{}])[0]
+    fields = table.get("fields", [])
+    if not fields:
+        body["startTime"] = iso_z(datetime.now(timezone.utc) - timedelta(days=7))
+        data = post_apl(token, org, body)
+        table = (data.get("tables") or [{}])[0]
+        fields = table.get("fields", [])
+
+    if not fields:
+        raise CLIError(
+            "Dataset returned no fields, even over a 7-day lookback. The dataset may be empty."
+        )
+
+    fmt = args.format
+    if fmt == "auto":
+        fmt = "pretty" if sys.stdout.isatty() else "jsonl"
+    if fmt in ("json", "raw"):
+        print(json.dumps(fields, default=str, indent=2))
+    elif fmt == "jsonl":
+        print("\n".join(json.dumps(f, default=str) for f in fields))
+    elif fmt == "csv":
+        print("name,type")
+        for f in fields:
+            print(f"{f.get('name', '')},{f.get('type', '')}")
+    else:
+        use_color = color_enabled(args.no_color)
+        width = max((len(f.get("name", "")) for f in fields), default=10)
+        for f in fields:
+            n = f.get("name", "")
+            t = f.get("type", "")
+            print(f"  {n:<{width}}  {paint(t, Color.DIM, use_color)}")
+        print(f"\n--- {len(fields)} fields ---")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Help / examples
+
+
+def long_help() -> str:
+    return textwrap.dedent(
+        f"""\
+        bin/logs — Query city-doodle API + worker logs in Axiom
+
+        QUICK START
+          bin/logs errors --since 6h            Error/critical lines and 5xx responses
+          bin/logs errors --service worker      ...from one app (api | worker)
+          bin/logs slow --since 1h              Slow API requests (>2s)
+          bin/logs tail                         Latest 50 lines
+          bin/logs path /worlds/                Requests for a path prefix
+          bin/logs request <request-id>         All lines for one request (X-Request-ID)
+          bin/logs jobs --failed                Failed worker jobs
+          bin/logs jobs --type terrain_generation --world <world-id>
+          bin/logs jobs --job <job-id>          One job's whole lifecycle, oldest first
+          bin/logs endpoints --since 6h         Per-route p50/p95/p99 + 5xx count
+          bin/logs summary --since 1h           Birds-eye dashboard
+          bin/logs health                       Token + dataset check
+          bin/logs fields                       Field names + types in the dataset
+          bin/logs apl "['{DEFAULT_DATASET}'] | take 5"   Full APL query
+          echo "['{DEFAULT_DATASET}'] | take 5" | bin/logs apl -   APL via stdin
+
+        FREE-FORM QUERY (interpolated into | where ...)
+          bin/logs query "service == 'api' and toint(status) >= 500"
+
+        FIELDS
+          all lines     _time level service(api|worker) logger_name message app_env
+                        fly_region fly_machine_id; exc_type exc_message exc_traceback
+          API requests  event='request' method route path status duration_ms
+                        request_id [user_id]   (/health is debug-level, not shipped
+                        at LOG_LEVEL=info)
+          worker jobs   job_id job_type world_id on every line during a job; events
+                        job_started, job_finished (outcome completed|error,
+                        duration_ms), job_retry_scheduled, job_failed_permanently
+
+        TIME RANGE
+          --since 1h | 30m | 7d | 1w | 2026-05-01T00:00:00Z | today | yesterday
+          --until <same formats>  (default: now)
+
+        OUTPUT
+          --format pretty | json | jsonl | raw | csv | auto
+                                (auto = pretty if TTY else jsonl)
+          --fields a,b,c        Project specific fields in pretty/csv output
+          --all-fields          Show every field returned (verbose pretty)
+          --limit N             Max rows returned (default 50)
+          --threshold MS        For `slow` and `summary` (default 2000)
+          --verbose / -v        Print rowsMatched/elapsedTime to stderr
+          --dry-run             Print the APL + time range without executing
+          --no-color            Disable ANSI colors (also: NO_COLOR env)
+
+        DATASET
+          default               $AXIOM_DATASET, else {DEFAULT_DATASET} (production)
+          --dev                 $AXIOM_DATASET_DEV (required; no default)
+          --dataset NAME        explicit dataset
+
+        ENV VARS (read from the environment, then .env.local here, then the main
+        checkout's .env.local when run from a git worktree)
+          AXIOM_QUERY_TOKEN     Token with Query (read) permission. Preferred.
+          AXIOM_API_TOKEN       Fallback. The apps' token is usually ingest-only and
+                                gets HTTP 403 on queries.
+          AXIOM_ORG_ID          Optional; only personal tokens need it.
+          AXIOM_DATASET / AXIOM_DATASET_DEV
+
+        EXIT CODES
+          0 success
+          1 user / config error (bad args, missing token, bad APL, 4xx incl. 403)
+          2 parser drift (Axiom shape changed; loud failure on purpose)
+          3 network / API error (timeout, DNS, 5xx, JSON decode)
+
+        See also: bin/logs examples   Common APL recipes
+        """
+    )
+
+
+def examples_help() -> str:
+    d = DEFAULT_DATASET
+    return textwrap.dedent(
+        f"""\
+        APL recipes — paste into `bin/logs apl "<query>"` (use `apl -` for stdin
+        if quoting gets nasty). Default window is the last hour; pass --since.
+
+        # API 5xx by route
+        ['{d}'] | where event == 'request' and toint(status) >= 500
+          | summarize n=count() by method, route | sort by n desc
+
+        # Exceptions behind those 5xx (unhandled errors carry exc_type on the request line)
+        ['{d}'] | where service == 'api' and isnotempty(exc_type)
+          | summarize n=count(), last=max(_time) by exc_type, route | sort by n desc
+
+        # Slowest routes by p95
+        ['{d}'] | where event == 'request'
+          | summarize p50=percentile(duration_ms,50), p95=percentile(duration_ms,95),
+                      p99=percentile(duration_ms,99), n=count() by method, route
+          | sort by p95 desc | take 25
+
+        # Slow requests over 5s, newest first
+        ['{d}'] | where event == 'request' and duration_ms > 5000
+          | project _time, method, path, status, duration_ms, request_id
+          | sort by _time desc
+
+        # Worker job failures by job type
+        ['{d}'] | where event == 'job_finished' and outcome == 'error'
+          | summarize n=count() by job_type, exc_type | sort by n desc
+
+        # Jobs that exhausted their retries
+        ['{d}'] | where event == 'job_failed_permanently'
+          | project _time, job_type, job_id, world_id, retry_count
+
+        # Job duration by type (terrain generation for coastal worlds is the usual suspect)
+        ['{d}'] | where event == 'job_finished' and outcome == 'completed'
+          | summarize p50=percentile(duration_ms,50), p95=percentile(duration_ms,95),
+                      max=max(duration_ms), n=count() by job_type
+
+        # Everything that happened for one world (API + worker)
+        ['{d}'] | where world_id == '<world-uuid>' or path contains '<world-uuid>'
+          | sort by _time asc
+
+        # Trace one request id (the API echoes it in the X-Request-ID response header)
+        ['{d}'] | where request_id == '<request-id>' | sort by _time asc
+
+        # Error volume per app per hour
+        ['{d}'] | where level == 'error' or level == 'critical'
+          | summarize n=count() by bin(_time, 1h), service
+        """
+    )
+
+
+# ---------------------------------------------------------------------------
+# Argument parser
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="bin/logs",
+        description="Query Axiom application logs (run `bin/logs help` for the full guide).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="cmd", required=False, metavar="<command>")
+
+    def add_query_flags(p: argparse.ArgumentParser, *, threshold: bool = False) -> None:
+        p.add_argument("--since", default="1h", help="Lookback (default 1h)")
+        p.add_argument("--until", default=None, help="End time (default now)")
+        p.add_argument("--limit", type=int, default=50, help="Max rows (default 50)")
+        p.add_argument(
+            "--format",
+            choices=["pretty", "json", "jsonl", "raw", "csv", "auto"],
+            default="auto",
+            help="Output format (default: pretty if TTY else jsonl)",
+        )
+        p.add_argument("--fields", default=None, help="Comma-separated field projection")
+        p.add_argument("--all-fields", action="store_true", help="Show every field")
+        p.add_argument("-v", "--verbose", action="store_true", help="Print query stats to stderr")
+        p.add_argument("--dry-run", action="store_true", help="Print APL without executing")
+        p.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
+        p.add_argument(
+            "--dev",
+            action="store_true",
+            help="Query the dev dataset (AXIOM_DATASET_DEV; must be set)",
+        )
+        p.add_argument(
+            "--dataset",
+            default=None,
+            metavar="NAME",
+            help=f"Query an explicit dataset (overrides --dev; default {DEFAULT_DATASET})",
+        )
+        p.add_argument(
+            "--service",
+            choices=["api", "worker"],
+            default=None,
+            help="Only lines from one app (errors, tail, query)",
+        )
+        if threshold:
+            p.add_argument(
+                "--threshold",
+                type=int,
+                default=2000,
+                help="Slow threshold ms (default 2000)",
+            )
+
+    p_errors = sub.add_parser("errors", help="Recent error / critical logs")
+    add_query_flags(p_errors)
+
+    p_slow = sub.add_parser("slow", help="Slow HTTP requests (event=request)")
+    add_query_flags(p_slow, threshold=True)
+
+    p_jobs = sub.add_parser("jobs", help="Worker job logs (filter by type / job / world)")
+    p_jobs.add_argument("--type", default=None, help="Job type, e.g. terrain_generation")
+    p_jobs.add_argument("--job", default=None, metavar="JOB_ID", help="One job id (oldest first)")
+    p_jobs.add_argument("--world", default=None, metavar="WORLD_ID", help="One world id")
+    p_jobs.add_argument("--failed", action="store_true", help="Only failed attempts")
+    add_query_flags(p_jobs)
+
+    p_query = sub.add_parser("query", help="Free-form `where` clause")
+    p_query.add_argument("where_clause", help="APL where-clause (no leading 'where ')")
+    add_query_flags(p_query)
+
+    p_apl = sub.add_parser("apl", help='Raw APL query (use "-" to read from stdin)')
+    p_apl.add_argument("apl_query", help='APL query, or "-" to read from stdin')
+    add_query_flags(p_apl)
+
+    p_tail = sub.add_parser("tail", help="Latest logs across all sources")
+    add_query_flags(p_tail)
+
+    p_request = sub.add_parser("request", help="All logs for a request_id")
+    p_request.add_argument("request_id", help="Request id (X-Request-ID response header)")
+    add_query_flags(p_request)
+
+    p_path = sub.add_parser("path", help="API requests for a path prefix")
+    p_path.add_argument("path_prefix", help="e.g. /worlds/")
+    add_query_flags(p_path)
+
+    p_endpoints = sub.add_parser("endpoints", help="Per-route p50/p95/p99 latency + 5xx")
+    add_query_flags(p_endpoints)
+
+    p_count = sub.add_parser("count", help="Just print rowsMatched count")
+    p_count.add_argument("where_clause", nargs="?", default=None, help="Optional where-clause")
+    add_query_flags(p_count)
+
+    p_fields = sub.add_parser("fields", help="List dataset field names + types")
+    add_query_flags(p_fields)
+
+    p_health = sub.add_parser("health", help="Token + dataset connectivity check")
+    p_health.add_argument("--no-color", action="store_true")
+    p_health.add_argument("--dev", action="store_true", help="Check AXIOM_DATASET_DEV")
+    p_health.add_argument("--dataset", default=None, metavar="NAME", help="Check a dataset")
+
+    p_summary = sub.add_parser("summary", help="Birds-eye dashboard")
+    p_summary.add_argument("--since", default="1h")
+    p_summary.add_argument("--until", default=None)
+    p_summary.add_argument("--threshold", type=int, default=2000)
+    p_summary.add_argument("--no-color", action="store_true")
+    p_summary.add_argument("--dev", action="store_true", help="Summarize AXIOM_DATASET_DEV")
+    p_summary.add_argument("--dataset", default=None, metavar="NAME", help="Summarize a dataset")
+
+    sub.add_parser("examples", help="Print common APL recipes")
+    sub.add_parser("help", help="Print extended help")
+
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# Main
+
+
+def _ensure_default_attrs(args: argparse.Namespace) -> argparse.Namespace:
+    for k, v in [
+        ("no_color", False),
+        ("verbose", False),
+        ("dry_run", False),
+        ("all_fields", False),
+        ("fields", None),
+        ("format", "auto"),
+    ]:
+        if not hasattr(args, k):
+            setattr(args, k, v)
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args = _ensure_default_attrs(args)
+
+    cmd = args.cmd
+    if cmd is None or cmd == "help":
+        print(long_help())
+        return 0
+    if cmd == "examples":
+        print(examples_help())
+        return 0
+    if cmd == "health":
+        return run_health(args)
+    if cmd == "summary":
+        return run_summary(args)
+    if cmd == "fields":
+        return run_fields(args)
+    if cmd == "count":
+        return run_count(args)
+
+    builders = {
+        "errors": cmd_errors,
+        "slow": cmd_slow,
+        "jobs": cmd_jobs,
+        "query": cmd_query,
+        "apl": cmd_apl,
+        "tail": cmd_tail,
+        "request": cmd_request,
+        "path": cmd_path,
+        "endpoints": cmd_endpoints,
+    }
+    if cmd not in builders:
+        parser.error(f"Unknown command: {cmd}")
+
+    # Dry-run prints the APL without a token.
+    if args.dry_run:
+        dataset = lookup("AXIOM_DATASET") or DEFAULT_DATASET
+    else:
+        _, dataset, _ = get_config()
+    dataset = resolve_dataset(args, dataset)
+
+    apl = builders[cmd](args, dataset)
+    since = parse_time_arg(args.since)
+    until = (
+        parse_time_arg(args.until, default_now=True) if args.until else datetime.now(timezone.utc)
+    )
+    return run_query(apl, since=since, until=until, args=args)
+
+
+def _entrypoint() -> None:
+    try:
+        sys.exit(main())
+    except CLIError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(exc.exit_code)
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    _entrypoint()
