@@ -23,6 +23,7 @@ from sqlalchemy import text
 from city_worker.config import settings
 from city_worker.database import get_session
 from city_worker.models import JobStatus, JobType
+from city_worker.observability import bind_log_context, reset_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -401,16 +402,47 @@ class JobRunner:
         On failure, retries with exponential backoff if retry_count < max_retries.
         After max retries are exhausted, marks the job as permanently FAILED.
         """
-        logger.info("Executing job %s (type: %s)", job_id, job_type)
+        # CITY-642: every line logged during the job carries job_id/job_type/world_id
+        # in Axiom; the lifecycle lines below add event/outcome/duration_ms. Stdout
+        # format ignores `extra`, so console output is unchanged.
+        log_token = bind_log_context(
+            job_id=str(job_id),
+            job_type=job_type,
+            world_id=str(params["world_id"]) if params.get("world_id") else None,
+        )
+        try:
+            await self._execute_job_logged(job_id, job_type, params)
+        finally:
+            reset_log_context(log_token)
+
+    async def _execute_job_logged(self, job_id: UUID, job_type: str, params: dict) -> None:
+        logger.info(
+            "Executing job %s (type: %s)", job_id, job_type, extra={"event": "job_started"}
+        )
         result: dict[str, Any] | None = None
         error: str | None = None
+        start = time.monotonic()
+
+        def lifecycle(event: str, outcome: str, **fields: Any) -> dict[str, Any]:
+            return {
+                "event": event,
+                "outcome": outcome,
+                "duration_ms": round((time.monotonic() - start) * 1000, 1),
+                **fields,
+            }
 
         try:
             result = await self._run_job_handler(job_id, job_type, params)
             status = JobStatus.COMPLETED
-            logger.info("Job %s completed successfully", job_id)
+            logger.info(
+                "Job %s completed successfully",
+                job_id,
+                extra=lifecycle("job_finished", "completed"),
+            )
         except Exception as e:
-            logger.exception("Job %s failed", job_id)
+            # outcome=error means this attempt failed; whether it is retried is the
+            # next line (_retry_job's "Retrying job" or job_failed_permanently below).
+            logger.exception("Job %s failed", job_id, extra=lifecycle("job_finished", "error"))
             error = str(e)
             # Check if we can retry
             retry_count, max_retries = await self._get_retry_info(job_id)
@@ -419,7 +451,10 @@ class JobRunner:
                 return
             status = JobStatus.FAILED
             logger.warning(
-                "Job %s permanently failed after %d retries", job_id, retry_count
+                "Job %s permanently failed after %d retries",
+                job_id,
+                retry_count,
+                extra={"event": "job_failed_permanently", "retry_count": retry_count},
             )
 
         await self._update_job_status(job_id, status, result, error)
@@ -532,6 +567,11 @@ class JobRunner:
             job_id,
             new_retry_count,
             delay_seconds,
+            extra={
+                "event": "job_retry_scheduled",
+                "retry_count": new_retry_count,
+                "retry_delay_s": delay_seconds,
+            },
         )
 
         session = await get_session()

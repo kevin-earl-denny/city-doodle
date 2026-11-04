@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError, DataError, IntegrityError, OperationalError
 
 from city_api.config import settings
+from city_api.observability import configure_axiom_logging, redact_sensitive
+from city_api.request_logging import RequestLoggingMiddleware
 from city_api.routers import auth_router
 from city_api.routes import (
     brief_router,
@@ -30,6 +32,21 @@ from city_api.routes import (
 )
 
 logger = logging.getLogger(__name__)
+
+# CITY-642: ship logs to Axiom when AXIOM_API_TOKEN is set; a no-op otherwise. Runs at
+# import, i.e. after uvicorn has applied its own logging config, so attaching to the
+# non-propagating `uvicorn` logger also ships uvicorn's startup/error lines.
+configure_axiom_logging(
+    service="api",
+    app_env=settings.app_env,
+    api_token=settings.axiom_api_token,
+    org_id=settings.axiom_org_id,
+    dataset=settings.axiom_dataset,
+    dataset_dev=settings.axiom_dataset_dev,
+    log_level=settings.log_level,
+    extra_loggers=("uvicorn",),
+    preserve_stderr_fallback=True,
+)
 
 app = FastAPI(
     title="City Doodle API",
@@ -53,10 +70,17 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # CITY-642: let the web app read the request id to quote in bug reports.
+    expose_headers=["X-Request-ID"],
 )
 
 # CITY-511: Compress responses > 1KB for 50-80% bandwidth reduction on JSON payloads
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# CITY-642: added last so it is the outermost user middleware (just inside Starlette's
+# ServerErrorMiddleware): it times the whole stack, sees the final status, and binds
+# its request_id for every log line emitted inside the request.
+app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(auth_router)
 app.include_router(cities_router)
@@ -86,6 +110,29 @@ async def health():
     return {"status": "healthy"}
 
 
+# CITY-642: these handler lines can ship to Axiom, a durable, queryable store. So
+# they log the path (never the query string) and never raw DB error text, which
+# echoes row values (`DETAIL:  Key (email)=(...) already exists`) and query
+# arguments. Integrity/data errors log only the error class, SQLSTATE and
+# constraint; the others pass through redact_sensitive. The Axiom formatter applies
+# redact_sensitive to every shipped line as well, and the engine sets
+# hide_parameters=True (city_api.database).
+def _db_error_summary(exc: DBAPIError) -> str:
+    """`UniqueViolationError sqlstate=23505 constraint=users_email_key`, no values."""
+    orig = exc.orig
+    # SQLAlchemy wraps the asyncpg exception: `.orig` on 2.1, `__cause__` on 2.0.
+    driver_exc = getattr(orig, "orig", None) or getattr(orig, "__cause__", None) or orig
+    parts = [type(driver_exc).__name__ if driver_exc is not None else type(exc).__name__]
+    sqlstate = getattr(driver_exc, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if sqlstate:
+        parts.append(f"sqlstate={sqlstate}")
+    for attr, label in (("constraint_name", "constraint"), ("table_name", "table")):
+        value = getattr(driver_exc, attr, None)
+        if value:
+            parts.append(f"{label}={value}")
+    return " ".join(parts)
+
+
 @app.exception_handler(IntegrityError)
 async def integrity_error_handler(request: Request, exc: IntegrityError):
     """Handle database integrity errors (unique constraint, foreign key violations).
@@ -93,7 +140,8 @@ async def integrity_error_handler(request: Request, exc: IntegrityError):
     Returns 409 Conflict for constraint violations.
     """
     logger.warning(
-        f"Database integrity error on {request.method} {request.url}: {exc.orig}"
+        f"Database integrity error on {request.method} {request.url.path}: "
+        f"{_db_error_summary(exc)}"
     )
     # Extract useful error message from the exception
     error_msg = str(exc.orig) if exc.orig else str(exc)
@@ -119,8 +167,8 @@ async def operational_error_handler(request: Request, exc: OperationalError):
     Returns 503 Service Unavailable for database connectivity issues.
     """
     logger.error(
-        f"Database operational error on {request.method} {request.url}: {exc}\n"
-        f"{traceback.format_exc()}"
+        f"Database operational error on {request.method} {request.url.path}: "
+        f"{redact_sensitive(exc)}\n{redact_sensitive(traceback.format_exc())}"
     )
     return JSONResponse(
         status_code=503,
@@ -138,7 +186,8 @@ async def data_error_handler(request: Request, exc: DataError):
     Returns 400 Bad Request for invalid data.
     """
     logger.warning(
-        f"Database data error on {request.method} {request.url}: {exc.orig}"
+        f"Database data error on {request.method} {request.url.path}: "
+        f"{_db_error_summary(exc)}"
     )
     return JSONResponse(
         status_code=400,
@@ -158,7 +207,7 @@ async def validation_error_handler(request: Request, exc: ValidationError):
     in repository/service layer code.
     """
     logger.warning(
-        f"Validation error on {request.method} {request.url}: {exc}"
+        f"Validation error on {request.method} {request.url.path}: {redact_sensitive(exc)}"
     )
     return JSONResponse(
         status_code=422,
@@ -179,8 +228,8 @@ async def dbapi_error_handler(request: Request, exc: DBAPIError):
     database is temporarily unavailable.
     """
     logger.error(
-        f"Database DBAPI error on {request.method} {request.url}: {exc}\n"
-        f"{traceback.format_exc()}"
+        f"Database DBAPI error on {request.method} {request.url.path}: "
+        f"{redact_sensitive(exc)}\n{redact_sensitive(traceback.format_exc())}"
     )
     return JSONResponse(
         status_code=503,
@@ -220,8 +269,8 @@ async def global_exception_handler(request: Request, exc: Exception):
     opaque "Failed to fetch" CORS errors.
     """
     logger.error(
-        f"Unhandled exception on {request.method} {request.url}: {exc}\n"
-        f"{traceback.format_exc()}"
+        f"Unhandled exception on {request.method} {request.url.path}: "
+        f"{redact_sensitive(exc)}\n{redact_sensitive(traceback.format_exc())}"
     )
     response = JSONResponse(
         status_code=500,
