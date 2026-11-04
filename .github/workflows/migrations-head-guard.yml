@@ -1,0 +1,67 @@
+# Always-on Alembic chain guard (CITY-639). Replaces the path-filtered
+# migrations.yml.
+#
+# No path filter on purpose: this is meant to be a REQUIRED status check, and
+# GitHub never reports a path-filtered check on PRs that don't match the filter,
+# which leaves those PRs waiting forever on a required check. It only reads the
+# revision files (`alembic heads` + a static duplicate-ID scan, no database), so
+# running it on every PR is cheap.
+#
+# With "require branches to be up to date before merging" on main, two PRs that
+# each add a migration off the same parent can't both merge: once the first
+# lands, the second must update onto main, its branch now carries both heads,
+# and this check fails until `bin/migrations fix-heads` reconciles them.
+# The push-to-main run is a backstop detector.
+name: Migrations Head Guard
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    # This job name is the status-check context to mark as required on main.
+    # Renaming it without updating branch protection silently stops gating PRs.
+    name: Assert single Alembic head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Install Alembic deps
+        # Revision files import alembic, sqlalchemy and city_api.database (which
+        # imports sqlalchemy.ext.asyncio, hence the asyncio extra for greenlet).
+        run: pip install alembic "sqlalchemy[asyncio]" python-dotenv
+
+      - name: Check Alembic chain
+        env:
+          ALEMBIC_CMD: alembic
+        run: |
+          # Exit 1 = chain problem (what this guard is for); exit 2 = alembic
+          # broken on the runner (an environment fault, not a chain problem).
+          status=0
+          ./bin/migrations check || status=$?
+          if [[ "$status" -eq 1 ]]; then
+            echo "::error::Alembic chain has multiple heads or a duplicate revision ID. For multiple heads: update this branch onto the latest main, run 'bin/migrations fix-heads', commit the merge migration, and push."
+            exit 1
+          elif [[ "$status" -ne 0 ]]; then
+            echo "::error::bin/migrations check failed (exit $status); could not verify the Alembic chain (see log above)."
+            exit "$status"
+          fi
