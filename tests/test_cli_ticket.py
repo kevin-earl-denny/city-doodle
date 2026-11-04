@@ -7,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from lib.vibe.cli.ticket import (
+    _risk_menu_options,
     ensure_tracker_configured,
     get_tracker,
     main,
@@ -774,3 +775,21 @@ class TestCreateCommandRelatesTo:
         assert "Relates to:  TEST-50" in result.output
         assert "DRY RUN" in result.output
         mock_tracker.create_ticket.assert_not_called()
+
+
+class TestRiskMenuOptions:
+    """Interactive risk menu must match the configured labels (CITY-689)."""
+
+    def test_options_follow_configured_labels(self) -> None:
+        options = _risk_menu_options(["Low Risk", "Medium Risk"])
+        assert [label for label, _ in options] == ["Low Risk", "Medium Risk"]
+        assert options[0][1] == "Docs, tests, typos, minor UI tweaks"
+
+    def test_every_choice_indexes_into_config(self) -> None:
+        risk_labels = ["Low Risk", "Medium Risk"]
+        options = _risk_menu_options(risk_labels)
+        for choice in range(1, len(options) + 1):
+            assert risk_labels[choice - 1] == options[choice - 1][0]
+
+    def test_unknown_label_gets_empty_description(self) -> None:
+        assert _risk_menu_options(["Spicy"]) == [("Spicy", "")]

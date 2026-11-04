@@ -475,6 +475,22 @@ def _prompt_for_labels(label_config: dict) -> list[str]:
     return labels
 
 
+_RISK_DESCRIPTIONS = {
+    "Low Risk": "Docs, tests, typos, minor UI tweaks",
+    "Medium Risk": "New features, bug fixes, refactoring",
+    "High Risk": "Auth, payments, database, infrastructure",
+}
+
+
+def _risk_menu_options(risk_labels: list[str]) -> list[tuple[str, str]]:
+    """Menu options for exactly the configured risk labels.
+
+    Built from the config so a selection always indexes into risk_labels; a
+    hard-coded list crashed with IndexError when the config had fewer labels.
+    """
+    return [(label, _RISK_DESCRIPTIONS.get(label, "")) for label in risk_labels]
+
+
 def _interactive_create() -> tuple[str, str, list[str]]:
     """Interactive ticket creation with guided prompts.
 
@@ -511,11 +527,7 @@ def _interactive_create() -> tuple[str, str, list[str]]:
     risk_labels = label_config.get("risk", ["Low Risk", "Medium Risk", "High Risk"])
     risk_menu = NumberedMenu(
         title="Select risk level:",
-        options=[
-            ("Low Risk", "Docs, tests, typos, minor UI tweaks"),
-            ("Medium Risk", "New features, bug fixes, refactoring"),
-            ("High Risk", "Auth, payments, database, infrastructure"),
-        ],
+        options=_risk_menu_options(risk_labels),
         default=1,
     )
     risk_choice = risk_menu.show()

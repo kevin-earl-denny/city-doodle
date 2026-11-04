@@ -59,7 +59,7 @@ Do all the work in that worktree and open a PR when done. Don't combine `bin/vib
 ### Status flow
 **Backlog** → **Todo** → **In Progress** (`bin/vibe do`) → **In Review** (PR open) → **Deployed** (merged) → **To Test** (optional: waiting on a human check) → **Done** (verified in the running app).
 
-**Merging is Deployed, not Done.** Move a ticket to Done only after checking its acceptance criteria against production. Terminal states: Canceled, Duplicate.
+**Merging is Deployed, not Done.** Move a ticket to Done only after checking its acceptance criteria against production. (`bin/ticket close` sets Done, so don't use it on merge.) Terminal states: Canceled, Duplicate.
 
 Linear's native GitHub integration moves tickets on PR open and merge. Don't add workflows or hooks that also write those transitions.
 
@@ -153,6 +153,7 @@ bin/vibe doctor               # health check
 bin/vibe review-gate <pr>     # evaluate the merge bar locally (dry run)
 bin/vibe review-marker ...    # print an agent-review marker line
 bin/ticket list|get|create|update|comment|relate|close|labels|projects|users
+bin/logs                      # query API/worker logs in Axiom (bin/logs help; needs a query-capable token)
 bin/migrations check|heads|fix-heads
 ```
 
