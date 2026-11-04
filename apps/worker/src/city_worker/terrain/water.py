@@ -67,6 +67,45 @@ def _fractal_perturb_ring(
     return pts
 
 
+# Connected land/water regions smaller than this fraction of the tile are
+# treated as heightfield noise (CITY-647). Without this, land cells hovering
+# near water_level produce ~1,000 single-cell "puddles" per tile, which became
+# hundreds of coastline polygons and bay candidates and crashed the frontend.
+MIN_REGION_FRACTION = 0.002
+
+_STRUCT_4CONN = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=np.int32)
+
+
+def _min_region_cells(n_cells: int) -> tuple[int, int]:
+    """(interior, edge-touching) minimum region sizes in cells for denoising."""
+    min_cells = max(4, int(n_cells * MIN_REGION_FRACTION))
+    return min_cells, max(2, min_cells // 4)
+
+
+def denoise_water_mask(water_mask: NDArray[np.bool_]) -> NDArray[np.bool_]:
+    """Remove speckle noise from a binary water mask.
+
+    Small water regions are flipped to land and small land regions to water,
+    so only coherent water bodies and land masses remain. Regions touching the
+    tile edge get a lower bar (a quarter of the minimum): they may continue
+    into a neighbor tile, so a real channel crossing the border must survive,
+    but 1-6 cell specks along the border are still noise on both sides.
+    """
+    min_cells, min_edge_cells = _min_region_cells(water_mask.size)
+    cleaned = water_mask.copy()
+    for target in (True, False):
+        labeled, _ = label(cleaned == target, structure=_STRUCT_4CONN)
+        sizes = np.bincount(labeled.ravel())
+        small = sizes < min_cells
+        edge_labels = np.unique(
+            np.concatenate([labeled[0, :], labeled[-1, :], labeled[:, 0], labeled[:, -1]])
+        )
+        small[edge_labels] = sizes[edge_labels] < min_edge_cells
+        small[0] = False  # label 0 is the background, not a region
+        cleaned[small[labeled]] = not target
+    return cleaned
+
+
 def extract_coastlines(
     heightfield: NDArray[np.float64],
     water_level: float,
@@ -105,14 +144,12 @@ def extract_coastlines(
     # Create binary water mask — emit water polygons so the frontend
     # (which renders coastline polygons as blue/water) paints them correctly
     # for ALL presets (CITY-632).
-    water_mask = heightfield < water_level
+    water_mask = denoise_water_mask(heightfield < water_level)
 
     # Find connected water regions using scipy connected-component
     # labeling (CITY-625). This replaces the Python nested for-loop
     # + flood fill with a single vectorized C call.
-    # 4-connectivity structuring element (matching original flood fill).
-    struct_4conn = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=np.int32)
-    labeled, num_labels = label(water_mask, structure=struct_4conn)
+    labeled, num_labels = label(water_mask, structure=_STRUCT_4CONN)
 
     water_polygons = []
     for lbl in range(1, num_labels + 1):
@@ -139,13 +176,14 @@ def extract_coastlines(
     if fractal_amplitude > 0 and fractal_seed is not None:
         smoothed = _apply_fractal_to_geometry(smoothed, fractal_amplitude, fractal_seed)
 
-    # Convert to features
-    features = []
-    if isinstance(smoothed, Polygon):
-        features.append(_polygon_to_feature(smoothed, "coastline"))
-    elif isinstance(smoothed, MultiPolygon):
-        for poly in smoothed.geoms:
-            features.append(_polygon_to_feature(poly, "coastline"))
+    # Convert to features. Thin regions that pass the cell-count denoise can
+    # still hull down to slivers of a few px²; drop anything smaller than the
+    # edge-region minimum so tile borders aren't lined with specks (CITY-647).
+    min_area = _min_region_cells(h * w)[1] * cell_size * cell_size
+    polys = [smoothed] if isinstance(smoothed, Polygon) else list(getattr(smoothed, "geoms", []))
+    features = [
+        _polygon_to_feature(poly, "coastline") for poly in polys if poly.area >= min_area
+    ]
 
     return features
 
@@ -982,10 +1020,11 @@ def extract_beaches(
 
     # Beach must be adjacent to water — use binary dilation with a 3x3
     # structuring element (8-connectivity) to find all cells neighbouring
-    # water, then intersect with the beach candidate mask.
-    water_mask = heightfield < water_level
+    # water, then intersect with the beach candidate mask. The denoised mask
+    # keeps beaches off speckle islands in open ocean (CITY-647).
+    water_mask = denoise_water_mask(heightfield < water_level)
     dilated_water = binary_dilation(water_mask, structure=np.ones((3, 3)))
-    beach_mask = beach_mask & dilated_water
+    beach_mask = beach_mask & ~water_mask & dilated_water
 
     # Pre-compute river buffer zones for filtering (CITY-546).
     # Buffer each river line by its width (or a minimum) to create

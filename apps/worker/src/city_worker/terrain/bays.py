@@ -16,6 +16,7 @@ from shapely.geometry import LineString, MultiPoint, Point, Polygon
 from shapely.ops import unary_union
 
 from city_worker.terrain.types import TerrainFeature
+from city_worker.terrain.water import denoise_water_mask
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,10 @@ class BayConfig:
 
     # River mouth bay bonus (how much river flow increases bay likelihood)
     river_mouth_factor: float = 2.0
+
+    # Keep only the N largest bays per tile (CITY-647). Noisy coastlines can
+    # yield hundreds of candidates, which render as overlapping blue triangles.
+    max_bays: int = 5
 
 
 @dataclass
@@ -474,24 +479,20 @@ def extract_bays(
     h, w = heightfield.shape
     cell_size = tile_size / w
 
-    # Create land/water mask
-    land_mask = heightfield >= water_level
+    # Create land/water mask, denoised so speckle puddles don't register as
+    # hundreds of tiny coastline concavities (CITY-647)
+    land_mask = ~denoise_water_mask(heightfield < water_level)
 
-    # Find coastline points by detecting land-water boundaries
-    coastline_points: list[tuple[float, float]] = []
-
-    for i in range(1, h - 1):
-        for j in range(1, w - 1):
-            if land_mask[i, j]:
-                # Check if this land cell is adjacent to water
-                for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    ni, nj = i + di, j + dj
-                    if not land_mask[ni, nj]:
-                        # This is a coastline cell
-                        world_x = tile_x * tile_size + (j + 0.5) * cell_size
-                        world_y = tile_y * tile_size + (i + 0.5) * cell_size
-                        coastline_points.append((world_x, world_y))
-                        break
+    # Coastline cells: interior land cells with at least one 4-neighbor water cell
+    inner = land_mask[1:-1, 1:-1]
+    touches_water = (
+        ~land_mask[:-2, 1:-1] | ~land_mask[2:, 1:-1] | ~land_mask[1:-1, :-2] | ~land_mask[1:-1, 2:]
+    )
+    ii, jj = np.nonzero(inner & touches_water)
+    coastline_points: list[tuple[float, float]] = [
+        (tile_x * tile_size + (j + 1.5) * cell_size, tile_y * tile_size + (i + 1.5) * cell_size)
+        for i, j in zip(ii.tolist(), jj.tolist())
+    ]
 
     if len(coastline_points) < 20:
         return []
@@ -646,7 +647,9 @@ def extract_bays(
             )
         )
 
-    return features
+    # Stable sort keeps generation order among equal areas (determinism)
+    features.sort(key=lambda f: f.properties["area"], reverse=True)
+    return features[: config.max_bays]
 
 
 def apply_bay_erosion(
