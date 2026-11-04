@@ -273,7 +273,6 @@ def determine_inlet_positions(
 
     rng = np.random.default_rng(seed)
     inlets = []
-    last_inlet = -config.inlet_spacing_min
 
     # Sort potential inlet locations by energy (highest first)
     candidates = sorted(
@@ -488,7 +487,6 @@ def generate_tidal_flats(
     Returns:
         List of tidal flat polygons
     """
-    rng = np.random.default_rng(seed)
     flats = []
 
     for island_data in islands:
