@@ -193,13 +193,13 @@ async def create_lines_bulk(db: AsyncSession, lines: list[TransitLineCreate]) ->
     """Create multiple lines at once."""
     models = [
         TransitLineModel(
-            world_id=l.world_id,
-            line_type=l.line_type.value,  # Pass string value for PostgreSQL enum
-            name=l.name,
-            color=l.color,
-            is_auto_generated=l.is_auto_generated,
+            world_id=line.world_id,
+            line_type=line.line_type.value,  # Pass string value for PostgreSQL enum
+            name=line.name,
+            color=line.color,
+            is_auto_generated=line.is_auto_generated,
         )
-        for l in lines
+        for line in lines
     ]
     db.add_all(models)
     await db.commit()
@@ -245,7 +245,7 @@ async def list_lines_by_world(
         query = query.where(TransitLineModel.line_type == line_type)
     result = await db.execute(query)
     lines = result.scalars().all()
-    return [_line_to_schema(l) for l in lines]
+    return [_line_to_schema(line) for line in lines]
 
 
 async def list_lines_with_segments_by_world(
@@ -258,7 +258,7 @@ async def list_lines_with_segments_by_world(
         .options(selectinload(TransitLineModel.segments))
     )
     lines = result.scalars().all()
-    return [_line_with_segments_to_schema(l) for l in lines]
+    return [_line_with_segments_to_schema(line) for line in lines]
 
 
 async def update_line(

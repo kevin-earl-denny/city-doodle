@@ -324,7 +324,7 @@ async def update_line(
     # CITY-536: Check for duplicate line name within this world on rename
     if line_update.name is not None and line_update.name != line.name:
         existing_lines = await transit_repo.list_lines_by_world(db, line.world_id)
-        if any(l.name == line_update.name for l in existing_lines if l.id != line_id):
+        if any(other.name == line_update.name for other in existing_lines if other.id != line_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f'A transit line named "{line_update.name}" already exists in this world',

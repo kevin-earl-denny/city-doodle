@@ -266,11 +266,10 @@ class TestGrowthSimulator:
         config = GrowthConfig(world_id=uuid4(), years=1)
         sim = GrowthSimulator(config, seed=42)
 
-        changelog = sim.simulate([district_a, district_b], [], [], [])
+        sim.simulate([district_a, district_b], [], [], [])
 
         # District A's right-edge points should NOT have entered district B
         a_ring = district_a["geometry"]["coordinates"][0]
-        b_ring = district_b["geometry"]["coordinates"][0]
         for p in a_ring:
             assert not _point_in_ring(
                 p[0], p[1], [[1000, 0], [2000, 0], [2000, 1000], [1000, 1000], [1000, 0]]
@@ -295,7 +294,7 @@ class TestGrowthSimulator:
         config = GrowthConfig(world_id=uuid4(), years=1)
         sim = GrowthSimulator(config, seed=42)
 
-        changelog = sim.simulate([district], [], [], [], water_regions)
+        sim.simulate([district], [], [], [], water_regions)
 
         # Top-edge points should not have expanded into the lake
         ring = district["geometry"]["coordinates"][0]
@@ -389,7 +388,7 @@ class TestGrowthSimulator:
 
         config = GrowthConfig(world_id=uuid4(), years=1)
         sim = GrowthSimulator(config, seed=42)
-        changelog = sim.simulate([district, transit_neighbour], [], [], [])
+        sim.simulate([district, transit_neighbour], [], [], [])
 
         # The right-side vertices (x=1000 originally) should have expanded
         # further than the left-side vertices (x=0 originally) due to transit bias

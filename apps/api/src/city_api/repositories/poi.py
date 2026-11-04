@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from city_api.models.poi import POI as POIModel
+from city_api.models import poi as poi_models
 from city_api.schemas.poi import POI, POICreate, POIUpdate
 
 
@@ -19,7 +19,7 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 async def create_poi(db: AsyncSession, poi_create: POICreate) -> POI:
     """Create a new POI."""
-    poi = POIModel(
+    poi = poi_models.POI(
         world_id=poi_create.world_id,
         type=poi_create.type.value,
         name=poi_create.name,
@@ -38,7 +38,7 @@ async def create_pois_bulk(db: AsyncSession, pois: list[POICreate]) -> list[POI]
     models = []
     for p in pois:
         models.append(
-            POIModel(
+            poi_models.POI(
                 world_id=p.world_id,
                 type=p.type.value,
                 name=p.name,
@@ -56,7 +56,7 @@ async def create_pois_bulk(db: AsyncSession, pois: list[POICreate]) -> list[POI]
 
 async def get_poi(db: AsyncSession, poi_id: UUID) -> POI | None:
     """Get a POI by ID."""
-    result = await db.execute(select(POIModel).where(POIModel.id == poi_id))
+    result = await db.execute(select(poi_models.POI).where(poi_models.POI.id == poi_id))
     poi = result.scalar_one_or_none()
     if poi is None:
         return None
@@ -69,9 +69,9 @@ async def list_pois_by_world(
     poi_type: str | None = None,
 ) -> list[POI]:
     """List all POIs in a world, optionally filtered by type."""
-    query = select(POIModel).where(POIModel.world_id == world_id)
+    query = select(poi_models.POI).where(poi_models.POI.world_id == world_id)
     if poi_type is not None:
-        query = query.where(POIModel.type == poi_type)
+        query = query.where(poi_models.POI.type == poi_type)
     result = await db.execute(query)
     pois = result.scalars().all()
     return [_to_schema(p) for p in pois]
@@ -79,7 +79,7 @@ async def list_pois_by_world(
 
 async def update_poi(db: AsyncSession, poi_id: UUID, poi_update: POIUpdate) -> POI | None:
     """Update a POI."""
-    result = await db.execute(select(POIModel).where(POIModel.id == poi_id))
+    result = await db.execute(select(poi_models.POI).where(poi_models.POI.id == poi_id))
     poi = result.scalar_one_or_none()
     if poi is None:
         return None
@@ -102,7 +102,7 @@ async def update_poi(db: AsyncSession, poi_id: UUID, poi_update: POIUpdate) -> P
 
 async def delete_poi(db: AsyncSession, poi_id: UUID) -> bool:
     """Delete a POI."""
-    result = await db.execute(select(POIModel).where(POIModel.id == poi_id))
+    result = await db.execute(select(poi_models.POI).where(poi_models.POI.id == poi_id))
     poi = result.scalar_one_or_none()
     if poi is None:
         return False
@@ -114,11 +114,11 @@ async def delete_poi(db: AsyncSession, poi_id: UUID) -> bool:
 
 async def clear_pois(db: AsyncSession, world_id: UUID) -> None:
     """Delete all POIs in a world."""
-    await db.execute(delete(POIModel).where(POIModel.world_id == world_id))
+    await db.execute(delete(poi_models.POI).where(poi_models.POI.world_id == world_id))
     await db.commit()
 
 
-def _to_schema(poi: POIModel) -> POI:
+def _to_schema(poi: poi_models.POI) -> POI:
     """Convert SQLAlchemy model to Pydantic schema."""
     return POI(
         id=poi.id,

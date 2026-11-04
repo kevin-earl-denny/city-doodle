@@ -15,7 +15,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
-from sqlalchemy.dialects.postgresql import ENUM as PGEnum
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from city_api.database import Base, JSONVariant
@@ -65,7 +65,7 @@ class RoadNode(Base):
     # Use PostgreSQL native enum with explicit lowercase values
     # create_type=False since the enum is managed by migrations
     node_type: Mapped[str] = mapped_column(
-        PGEnum(
+        PG_ENUM(
             "intersection",
             "endpoint",
             "roundabout",
@@ -128,7 +128,7 @@ class RoadEdge(Base):
     # Use PostgreSQL native enum with explicit lowercase values
     # create_type=False since the enum is managed by migrations
     road_class: Mapped[str] = mapped_column(
-        PGEnum(
+        PG_ENUM(
             "highway",
             "arterial",
             "collector",
@@ -157,7 +157,7 @@ class RoadEdge(Base):
     district_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     # CITY-181: Waterfront designation (null = not waterfront)
     waterfront_type: Mapped[str | None] = mapped_column(
-        PGEnum(
+        PG_ENUM(
             "riverfront_drive",
             "boardwalk",
             name="waterfront_type",
