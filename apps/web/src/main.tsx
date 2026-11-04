@@ -3,8 +3,19 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import { AuthProvider, ToastProvider, ToastContainer } from './contexts'
+import { AuthNotConfigured } from './components/AuthNotConfigured'
+import { ClerkWithRouter } from './components/ClerkWithRouter'
 import { App } from './App'
 import './index.css'
+
+const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY?.trim()
+
+// Drop the pre-Clerk session token (CITY-644); nothing reads or accepts it any more.
+try {
+  localStorage.removeItem('auth_token')
+} catch {
+  // Storage unavailable (private mode / blocked): nothing to clean up.
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,15 +31,22 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AuthProvider>
-          <ToastProvider>
-            <App />
-            <ToastContainer />
-          </ToastProvider>
-        </AuthProvider>
-      </BrowserRouter>
-    </QueryClientProvider>
+    {clerkPublishableKey ? (
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <ClerkWithRouter publishableKey={clerkPublishableKey}>
+            <AuthProvider>
+              <ToastProvider>
+                <App />
+                <ToastContainer />
+              </ToastProvider>
+            </AuthProvider>
+          </ClerkWithRouter>
+        </BrowserRouter>
+      </QueryClientProvider>
+    ) : (
+      // No key: show setup instructions rather than crash or run unauthenticated.
+      <AuthNotConfigured />
+    )}
   </StrictMode>,
 )

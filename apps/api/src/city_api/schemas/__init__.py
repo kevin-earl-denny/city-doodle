@@ -84,10 +84,6 @@ from city_api.schemas.tile import (
     TileUpdate,
 )
 from city_api.schemas.user import (
-    AuthResponse,
-    SessionResponse,
-    UserCreate,
-    UserLogin,
     UserResponse,
 )
 from city_api.schemas.world import World, WorldCreate, WorldSettings, WorldUpdate
@@ -171,11 +167,7 @@ __all__ = [
     "TransitStationCreate",
     "TransitStationUpdate",
     # User/Auth
-    "UserCreate",
-    "UserLogin",
     "UserResponse",
-    "SessionResponse",
-    "AuthResponse",
     # Stadium
     "Stadium",
     "StadiumCreate",

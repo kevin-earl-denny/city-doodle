@@ -17,11 +17,8 @@ export * from "./types";
 
 // API client
 export { api, auth, worlds, tiles, jobs, seeds } from "./client";
-export {
-  setAuthToken,
-  getAuthToken,
-  clearAuthToken,
-} from "./client";
+export { setTokenGetter, getAuthToken, getLastAuthToken } from "./client";
+export type { TokenGetter } from "./client";
 
 // React Query hooks
 export * from "./hooks";

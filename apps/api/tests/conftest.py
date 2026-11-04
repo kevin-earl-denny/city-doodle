@@ -4,12 +4,16 @@ import os
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
-import pytest
-import pytest_asyncio
+# The API defaults to AUTH_MODE=production (fail closed). The suite authenticates
+# with the dev-mode X-User-Id header, so opt in before city_api.config is imported.
+# Clerk/production-mode tests switch settings.auth_mode per test (test_auth.py).
+os.environ["AUTH_MODE"] = "dev"
 
 # Import all models so they are registered with Base.metadata
 # This ensures tables are created during test setup
 import city_api.models  # noqa: F401
+import pytest
+import pytest_asyncio
 from city_api.database import Base, get_db
 from city_api.main import app
 from httpx import ASGITransport, AsyncClient

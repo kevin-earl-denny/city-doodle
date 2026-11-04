@@ -19,17 +19,12 @@ setup("verify API is healthy", async ({ request }) => {
   expect(data.status).toBe("healthy");
 });
 
-setup("verify auth endpoints are available", async ({ request }) => {
-  // Try to access auth endpoint (should return 422 without body, not 500)
-  const response = await request.post(`${API_URL}/auth/login`, {
-    data: {},
+setup("verify auth endpoint is available", async ({ request }) => {
+  // Without a Clerk session token /auth/me must answer 401 (not 404 or 5xx).
+  const response = await request.get(`${API_URL}/auth/me`, {
     failOnStatusCode: false,
   });
-
-  // 422 (validation error) means the endpoint exists and validates input
-  // 401/400 means it processed the request
-  // 500+ would indicate a server error
-  expect(response.status()).toBeLessThan(500);
+  expect(response.status()).toBe(401);
 });
 
 setup("verify worlds endpoint requires auth", async ({ request }) => {

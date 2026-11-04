@@ -69,10 +69,10 @@ npx playwright test --ui
 e2e/
 ├── fixtures/           # Shared test utilities
 │   ├── index.ts       # Combined fixture exports
-│   ├── auth.ts        # Auth helpers (register, login)
+│   ├── auth.ts        # Auth fixture (skips tests until Clerk e2e sign-in, CITY-654)
 │   └── api.ts         # Direct API helpers (create world, etc.)
 ├── global.setup.ts    # Runs once before all tests
-├── auth.spec.ts       # Authentication flow tests
+├── auth.spec.ts       # Clerk auth checks (API 401s; UI redirects need a Clerk key)
 ├── worlds.spec.ts     # World creation/management tests
 ├── build-grow.spec.ts # Seed placement & growth tests
 ├── export.spec.ts     # Export functionality tests
@@ -106,6 +106,12 @@ The `@slow` tag is detected by test title. In CI, tests with `@slow` in the titl
 ## Fixtures
 
 ### auth fixture
+
+> **Currently skipped.** CITY-644 replaced email/password auth with Clerk, so
+> `/auth/register`, `/auth/login` and the localStorage token no longer exist.
+> Any test that requests `auth` is skipped until e2e sign-in uses Clerk testing
+> tokens (CITY-654). The UI checks in `auth.spec.ts` run only when
+> `VITE_CLERK_PUBLISHABLE_KEY` is set. The example below is the pre-Clerk API.
 
 ```typescript
 import { test, expect } from "./fixtures";

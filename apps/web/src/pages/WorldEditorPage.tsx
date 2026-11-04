@@ -1,6 +1,6 @@
 /**
  * World editor page - loads MapCanvas and EditorShell for a specific world.
- * This is lazy-loaded to avoid bundling PixiJS on login/register pages.
+ * This is lazy-loaded to avoid bundling PixiJS on the sign-in/sign-up pages.
  */
 
 import { Link, useParams } from "react-router-dom";
