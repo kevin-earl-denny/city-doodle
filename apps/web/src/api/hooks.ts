@@ -319,6 +319,10 @@ export function useWorldTiles(
   const pollCountRef = useRef(0);
   // CITY-613: Ensure the "switched to slow polling" warning is only logged once
   const hasWarnedRef = useRef(false);
+  // CITY-698: Fetch count when refetchInterval last ran. TanStack evaluates
+  // refetchInterval on every observer update (each re-render), not just after a
+  // fetch, so counting evaluations could burn the fast-poll budget in seconds.
+  const lastFetchCountRef = useRef(-1);
 
   const query = useQuery({
     queryKey: queryKeys.worldTiles(worldId),
@@ -345,7 +349,12 @@ export function useWorldTiles(
 
       // CITY-620: After fast polling phase, switch to slow polling instead of stopping.
       // This ensures terrain is eventually picked up even if worker was slow/restarted.
-      pollCountRef.current += 1;
+      // CITY-698: count completed fetches, not evaluations of this callback.
+      const fetchCount = query.state.dataUpdateCount + query.state.errorUpdateCount;
+      if (fetchCount !== lastFetchCountRef.current) {
+        lastFetchCountRef.current = fetchCount;
+        pollCountRef.current += 1;
+      }
       if (pollCountRef.current >= MAX_FAST_POLL_COUNT) {
         if (!hasWarnedRef.current) {
           console.warn(
@@ -365,6 +374,7 @@ export function useWorldTiles(
   useEffect(() => {
     pollCountRef.current = 0;
     hasWarnedRef.current = false;
+    lastFetchCountRef.current = -1;
   }, [worldId]);
 
   return query;
