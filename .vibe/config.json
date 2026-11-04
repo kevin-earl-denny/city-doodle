@@ -53,11 +53,11 @@
       "district"
     ],
     "risk": [
-      "Low Risk"
+      "Low Risk",
+      "Medium Risk"
     ],
     "special": [
-      "HUMAN",
-      "Blocked"
+      "HUMAN"
     ]
   },
   "security": {

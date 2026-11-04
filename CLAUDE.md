@@ -39,7 +39,7 @@ Hand-maintained: edit it directly, in a PR, like any other file.
 Run `bin/vibe do CITY-123`. It:
 - creates `../city-doodle-worktrees/CITY-123` on branch `CITY-123`;
 - claims the ticket (In Progress, assigned to you);
-- refuses a ticket someone else already started (`--force` overrides);
+- refuses a ticket that is already started, including by you (`--force` overrides);
 - with `--dry-run`, prints what it would do and changes nothing.
 
 Do all the work in that worktree and open a PR when done. Don't combine `bin/vibe do` with Claude Code's `isolation: "worktree"` on the same ticket.
@@ -50,14 +50,14 @@ Do all the work in that worktree and open a PR when done. Don't combine `bin/vib
 3. **Labels:**
    - one type: `Bug`, `Feature`, `Improvement`, `chore` or `Refactor`;
    - at least one area: `frontend`, `backend`, `Infra`, `Docs`, `database`, `terrain`, `roads`, `transit` or `district`;
-   - `Low Risk` when it is; `HUMAN` when a person must act.
+   - one risk label, `Low Risk` or `Medium Risk`; `HUMAN` when a person must act.
    - Priority uses Linear's native field, not labels.
 4. **Description:** `## Context` (for bugs, include the root cause), numbered testable `## Acceptance Criteria`, and `## Dependencies`. A ticket with no description is never acceptable.
 5. **Dependencies:** link with `bin/ticket relate CITY-1 --blocks CITY-2`.
 6. **Descriptions are the source of truth.** Put scope changes in the description, not in comments.
 
 ### Status flow
-**Backlog** → **Todo** → **In Progress** (`bin/vibe do`) → **In Review** (PR open) → **Deployed** (merged) → **Done** (verified in the running app).
+**Backlog** → **Todo** → **In Progress** (`bin/vibe do`) → **In Review** (PR open) → **Deployed** (merged) → **To Test** (optional: waiting on a human check) → **Done** (verified in the running app).
 
 **Merging is Deployed, not Done.** Move a ticket to Done only after checking its acceptance criteria against production. Terminal states: Canceled, Duplicate.
 
@@ -76,7 +76,7 @@ Linear's native GitHub integration moves tickets on PR open and merge. Don't add
   - Secrets: new env vars and where they're set, or "None"
   - Cleanup: cloud resources created and deleted, or "None"
 
-  Then add `Linear: CITY-<n>`, the Claude Code footer, and, as its own last line, the author marker `<!-- city-author session=<your session name> -->`. `bin/vibe pr` fills this in.
+  Then add `Linear: CITY-<n>`, the Claude Code footer, and, as its own last line, the author marker `<!-- city-author session=<your session name> -->`. `bin/vibe pr` opens the PR with the template and appends the author marker; you fill in the sections, the `Linear:` line and the footer (or pass `--body`).
 - **Never add `--reviewer`.** Review here is agents plus CodeRabbit only.
 - Update the description when follow-up commits change scope.
 
@@ -87,7 +87,7 @@ A PR may merge when **either** of these holds on the **current head SHA**:
 
 **Exception (Kevin, 2026-11-03):** when a PR is blocking other PRs (a stacked PR, a deploy chain) or work Kevin asked for, **one** clean agent review on the head is enough. Say so in a PR comment when you merge.
 
-Any `major` verdict on the head blocks it until a new push. A push invalidates earlier reviews. The `review-gate` status reports the bar on every PR (`bin/vibe review-gate <n>` checks a PR locally). It is advisory, not a required check (CITY-638), so check it yourself before merging.
+Any `major` verdict on the head blocks it until a new push. A push invalidates earlier reviews. The `review-gate` status reports the bar on every PR (`bin/vibe review-gate <n>` checks a PR locally). It is advisory, not a required check (CITY-638), so check it yourself before merging. The gate implements only the two-review bar, so it stays red on a PR merged under the one-review exception; that's expected. A pure rebase keeps agent reviews (never CodeRabbit's) if someone posts `<!-- city-rebase-carry v1 from=<old-sha> to=<new-sha> -->` with full SHAs as a PR comment; the gate re-verifies it with `git patch-id`.
 
 **Agent review format.** A review is a GitHub PR **review** (event `COMMENT`, since agents can't approve PRs from their own account). Its exact last non-empty line is the marker printed by `bin/vibe review-marker --reviewer <id> --verdict pass|minor|major --pr <n>`, which has this shape:
 
@@ -115,7 +115,7 @@ Any `major` verdict on the head blocks it until a new push. A push invalidates e
 
 - Worktrees live in `../city-doodle-worktrees/CITY-<n>`.
 - `bin/vibe cleanup` removes a worktree only when **all** of these hold: its ticket is terminal (Done, Canceled or Deployed), it has no uncommitted changes, and it's more than 30 minutes old. **Never** judge a worktree stale with `git branch --merged`, because a fresh zero-commit branch looks merged.
-- Worktrees have no `.env.local`. Tools fall back to the main checkout's copy.
+- Worktrees have no `.env.local`. `.envrc` falls back to the main checkout's copy (run `direnv allow` once per worktree), and the Linear hooks do the same; otherwise load it yourself: `set -a; . <main checkout>/.env.local; set +a`.
 - Several sessions run in parallel. Announce which files you're touching, stay in your lane, and check `git branch -r` / `gh pr list` before starting overlapping work.
 
 ---
@@ -154,7 +154,6 @@ bin/vibe review-gate <pr>     # evaluate the merge bar locally (dry run)
 bin/vibe review-marker ...    # print an agent-review marker line
 bin/ticket list|get|create|update|comment|relate|close|labels|projects|users
 bin/migrations check|heads|fix-heads
-bin/logs                      # query API/worker logs in Axiom (see bin/logs help)
 ```
 
 Slash commands (`.claude/commands/`):

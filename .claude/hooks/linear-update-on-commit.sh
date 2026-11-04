@@ -70,10 +70,10 @@ except:
     pass
 " 2>/dev/null)
 
-# Skip if already started or completed
-if [ "$CURRENT_STATE_TYPE" = "started" ] || [ "$CURRENT_STATE_TYPE" = "completed" ]; then
-  exit 0
-fi
+# Skip if already started, completed, canceled or a duplicate: never reopen or downgrade
+case "$CURRENT_STATE_TYPE" in
+  started|completed|canceled|duplicate) exit 0 ;;
+esac
 
 # Find the "In Progress" state ID (type: started)
 IN_PROGRESS_STATE_ID=$(echo "$ISSUE_RESPONSE" | python3 -c "
