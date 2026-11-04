@@ -35,6 +35,32 @@
   --font-hand: "Caveat", cursive;
 
   --animate-step-in: step-in 150ms ease-out;
+  --animate-survey-trace: survey-trace 9s linear infinite;
+  --animate-pencil-bob: pencil-bob 1.6s ease-in-out infinite;
+  --animate-fade-in: fade-in 300ms ease-out;
+
+  /* Draws the plate border with a pathLength=100 stroke, then erases it. */
+  @keyframes survey-trace {
+    0% {
+      stroke-dashoffset: 100;
+    }
+    50% {
+      stroke-dashoffset: 0;
+    }
+    100% {
+      stroke-dashoffset: -100;
+    }
+  }
+
+  @keyframes pencil-bob {
+    0%,
+    100% {
+      transform: translate(0, 0) rotate(0deg);
+    }
+    50% {
+      transform: translate(6px, -3px) rotate(-6deg);
+    }
+  }
 
   @keyframes step-in {
     from {

@@ -5,15 +5,9 @@
  * from urban-morphology research and may be tuned later, so keep them here.
  */
 
-import type { WorldSettings } from "../../api/types";
+import type { GrowthStoryId, WorldSettings } from "../../api/types";
 
-export type GrowthStoryId =
-  | "medieval_tangle"
-  | "boomtown_grid"
-  | "grand_boulevards"
-  | "hill_town"
-  | "streetcar_suburb"
-  | "motor_sprawl";
+export type { GrowthStoryId };
 
 export type GrowthSettings = Pick<
   WorldSettings,

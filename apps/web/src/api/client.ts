@@ -63,6 +63,8 @@ import {
   UserLogin,
   UserResponse,
   World,
+  WorldBriefRequest,
+  WorldBriefResponse,
   WorldCreate,
   WorldUpdate,
 } from "./types";
@@ -156,6 +158,10 @@ async function request<T>(
       const apiDetail = (detail as { detail: unknown }).detail;
       if (typeof apiDetail === "string") {
         errorMessage = apiDetail;
+      } else if (Array.isArray(apiDetail) && apiDetail.length > 0) {
+        // FastAPI validation errors: [{ loc, msg, type }, ...]
+        const first = apiDetail[0] as { msg?: unknown };
+        if (typeof first?.msg === "string") errorMessage = first.msg.replace(/^Value error, /, "");
       } else if (apiDetail && typeof apiDetail === "object" && "message" in apiDetail) {
         errorMessage = String((apiDetail as { message: unknown }).message);
       }
@@ -236,6 +242,11 @@ export const worlds = {
   /** Delete a world */
   async delete(worldId: string): Promise<void> {
     return request<void>("DELETE", `/worlds/${worldId}`);
+  },
+
+  /** Turn a terrain description (or a refinement of a previous brief) into a world brief and settings */
+  async brief(data: WorldBriefRequest): Promise<WorldBriefResponse> {
+    return request<WorldBriefResponse>("POST", "/worlds/brief", { body: data });
   },
 };
 

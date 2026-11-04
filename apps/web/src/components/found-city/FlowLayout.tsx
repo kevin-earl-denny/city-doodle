@@ -6,7 +6,6 @@
 
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowIcon, CheckIcon } from "./icons";
-import { CityLoader } from "../ui";
 
 export const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-coast";
@@ -112,8 +111,8 @@ interface FlowColumnsProps {
   stepKey: string | number;
   left: ReactNode;
   right: ReactNode;
-  /** Gap between heading and content in the left column (22px, or 26px on step 3). */
-  leftGap?: "normal" | "loose";
+  /** Gap between heading and content in the left column: 18px, 22px (default) or 26px. */
+  leftGap?: "tight" | "normal" | "loose";
 }
 
 export function FlowColumns({ stepKey, left, right, leftGap = "normal" }: FlowColumnsProps) {
@@ -122,7 +121,13 @@ export function FlowColumns({ stepKey, left, right, leftGap = "normal" }: FlowCo
       key={stepKey}
       className="grid animate-step-in grid-cols-1 gap-9 p-7 motion-reduce:animate-none min-[900px]:grid-cols-[592fr_396fr]"
     >
-      <div className={`flex min-w-0 flex-col ${leftGap === "loose" ? "gap-[26px]" : "gap-[22px]"}`}>{left}</div>
+      <div
+        className={`flex min-w-0 flex-col ${
+          leftGap === "loose" ? "gap-[26px]" : leftGap === "tight" ? "gap-[18px]" : "gap-[22px]"
+        }`}
+      >
+        {left}
+      </div>
       <div className="flex min-w-0 flex-col gap-[14px]">{right}</div>
     </div>
   );
@@ -163,13 +168,15 @@ interface PrimaryButtonProps {
   pending?: boolean;
   /** Step 3's "Found …" button is a touch roomier than "Next". */
   size?: "normal" | "large";
+  /** Text to show while pending instead of the city loader. */
+  pendingLabel?: string;
 }
 
 /**
  * Submits the flow's form. While pending it is aria-disabled rather than
  * disabled, so it keeps focus (a disabled button drops focus to <body>).
  */
-export function PrimaryButton({ children, pending = false, size = "normal" }: PrimaryButtonProps) {
+export function PrimaryButton({ children, pending = false, size = "normal", pendingLabel }: PrimaryButtonProps) {
   return (
     <button
       type="submit"
@@ -183,10 +190,11 @@ export function PrimaryButton({ children, pending = false, size = "normal" }: Pr
       } ${FOCUS_RING}`}
     >
       {pending ? (
-        <span className="-my-6 flex h-[44px] items-center overflow-hidden [&>div]:py-0 [&_p]:hidden [&_svg]:h-10 [&_svg]:w-16">
-          <CityLoader variant="inline" message="Founding…" />
-          <span className="sr-only">Founding your city…</span>
-        </span>
+        // Plain text: the animated CityLoader doesn't fit inside a pill button.
+        <>
+          {pendingLabel ?? "Founding…"}
+          <span className="sr-only"> (working)</span>
+        </>
       ) : (
         <>
           {children}
@@ -206,13 +214,14 @@ interface PillButtonProps {
   disabled?: boolean;
 }
 
+/** aria-disabled rather than disabled, so a pill that was just clicked keeps focus. */
 export function PillButton({ children, onClick, icon, variant = "solid", disabled }: PillButtonProps) {
   return (
     <button
       type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`flex cursor-pointer items-center gap-2.5 rounded-full border-[1.5px] bg-transparent px-4 py-2.5 font-ui text-[14px] leading-[18px] font-semibold text-ink hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50 ${
+      onClick={() => !disabled && onClick()}
+      aria-disabled={disabled || undefined}
+      className={`flex cursor-pointer items-center gap-2.5 rounded-full border-[1.5px] bg-transparent px-4 py-2.5 font-ui text-[14px] leading-[18px] font-semibold text-ink hover:bg-paper aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${
         variant === "dashed" ? "border-dashed border-pencil" : "border-solid border-contour"
       } ${FOCUS_RING}`}
     >

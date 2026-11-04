@@ -7,9 +7,14 @@ import { ARCHETYPES } from "./archetypes";
 
 const mutateAsync = vi.fn();
 
-vi.mock("../../api", () => ({
-  useCreateWorld: () => ({ mutateAsync, isPending: false }),
-}));
+vi.mock("../../api", async () => {
+  const types = await vi.importActual<typeof import("../../api/types")>("../../api/types");
+  return {
+    ApiClientError: types.ApiClientError,
+    useCreateWorld: () => ({ mutateAsync, isPending: false }),
+    useWorldBrief: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  };
+});
 
 function renderModal() {
   const onClose = vi.fn();
@@ -180,15 +185,6 @@ describe("FoundCityModal", () => {
     const { onClose } = renderModal();
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
-  });
-
-  it("shows Describe it as a disabled, coming-soon tab", () => {
-    renderModal();
-    const describe = screen.getByRole("tab", { name: /Describe it/ });
-    expect(describe).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(describe);
-    expect(screen.getByRole("tab", { name: /Draw it/ })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Coming soon");
   });
 
   describe("keyboard and focus", () => {
