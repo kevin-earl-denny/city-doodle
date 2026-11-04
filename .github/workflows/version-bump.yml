@@ -8,20 +8,27 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  # Serialize bumps so two merges can't race on VERSION.
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   bump:
     if: github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine bump type
         id: bump
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
-          LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
           if echo "$LABELS" | grep -q '"Bug"'; then
             echo "type=patch" >> "$GITHUB_OUTPUT"
           elif echo "$LABELS" | grep -qE '"Feature"|"Chore"|"Refactor"'; then
@@ -31,10 +38,12 @@ jobs:
           fi
 
       - name: Bump version
+        env:
+          BUMP_TYPE: ${{ steps.bump.outputs.type }}
         run: |
           CURRENT=$(cat VERSION)
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          if [ "${{ steps.bump.outputs.type }}" = "minor" ]; then
+          if [ "$BUMP_TYPE" = "minor" ]; then
             MINOR=$((MINOR + 1))
             PATCH=0
           else
@@ -42,7 +51,7 @@ jobs:
           fi
           NEW="$MAJOR.$MINOR.$PATCH"
           echo "$NEW" > VERSION
-          echo "Bumped $CURRENT → $NEW (${{ steps.bump.outputs.type }})"
+          echo "Bumped $CURRENT → $NEW ($BUMP_TYPE)"
 
       - name: Commit and push
         run: |
