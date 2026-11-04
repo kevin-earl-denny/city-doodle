@@ -5,6 +5,9 @@ pydantic-settings>=2.0.0
 sqlalchemy[asyncio]>=2.0.0
 asyncpg>=0.29.0
 opensimplex>=0.4.0
+# CITY-700: opensimplex JIT-compiles its noise kernels when numba is present
+# (pure-Python loops otherwise, ~20x slower terrain generation)
+numba==0.68.1
 shapely>=2.0.0
 numpy>=1.24.0
 scipy>=1.10.0

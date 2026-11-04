@@ -1,12 +1,34 @@
 """Noise utilities for terrain generation using OpenSimplex."""
 
 import logging
+import time
 
 import numpy as np
 from numpy.typing import NDArray
 from opensimplex import OpenSimplex
 
 logger = logging.getLogger(__name__)
+
+
+def warm_noise_jit() -> float:
+    """Compile (or load from cache) opensimplex's numba noise kernel.
+
+    CITY-700: with numba installed, opensimplex JIT-compiles noise2array,
+    which makes terrain generation ~20x faster than its pure-Python fallback.
+    The first compile takes 20-60s, so the worker image runs this at build
+    time (NUMBA_CACHE_DIR) and the worker runs it again at startup, before
+    taking jobs, so no user job ever pays for compiling or loading the cache.
+
+    The arguments match every production call site: 1-D C-contiguous float64
+    coordinates (generate_heightfield, geographic_masks._fbm_grid), so this
+    compiles exactly the signature those calls use.
+
+    Returns:
+        Seconds spent (a cache hit takes about a second).
+    """
+    start = time.perf_counter()
+    OpenSimplex(seed=0).noise2array(np.zeros(2), np.zeros(2))
+    return time.perf_counter() - start
 
 
 class SeededNoise:
@@ -117,7 +139,10 @@ def generate_heightfield(
         logger.warning(
             "height_scale %.4f exceeds the %.4f limit for tile_size=%s "
             "resolution=%s; clamping to avoid aliased terrain",
-            scale, max_frequency, tile_size, resolution,
+            scale,
+            max_frequency,
+            tile_size,
+            resolution,
         )
     frequency = min(scale, max_frequency)
 
