@@ -225,9 +225,6 @@ def extract_bays(
             continue
         # Offset the region-local polygon to the region's position in the tile
         poly = translate(poly, region[1].start * cell_size, region[0].start * cell_size)
-        if isinstance(poly, MultiPolygon):
-            # Diagonal-only connections split a component; keep the largest
-            poly = max(poly.geoms, key=lambda p: p.area)
 
         water_depth = water_level - heightfield[region][bay]
         properties: dict[str, Any] = {

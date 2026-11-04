@@ -91,7 +91,7 @@ const VALID_BEACH_TYPES = new Set<string>(["ocean", "bay", "lake", "river"]);
  * - "river"          (LineString) → rivers with width
  * - "contour"        (LineString) → contours with elevation
  * - "beach"          (Polygon)   → beaches with beachType
- * - "bay"            (Polygon)   → water[type="ocean"]
+ * - "bay"            (Polygon)   → not rendered (already inside coastline water; CITY-690)
  * - "lagoon"         (Polygon)   → water[type="ocean"]
  * - "barrier_island" (Polygon)   → barrierIslands
  * - "tidal_flat"     (Polygon)   → tidalFlats
@@ -121,7 +121,6 @@ export function transformTileFeatures(
   let riverIdx = 0;
   let contourIdx = 0;
   let beachIdx = 0;
-  let bayIdx = 0;
   let lagoonIdx = 0;
   let barrierIdx = 0;
   let tidalIdx = 0;
@@ -233,14 +232,9 @@ export function transformTileFeatures(
       }
 
       case "bay": {
-        if (geom.type !== "Polygon") break;
-        const coords = geom.coordinates as [number, number][][];
-        bayIdx++;
-        water.push({
-          id: `bay-${bayIdx}`,
-          type: "ocean",
-          polygon: toPolygon(coords),
-        });
+        // CITY-690: bays are exact subsets of the sea already filled by
+        // coastline water.  Filling them again stacked translucent ocean
+        // and showed darker patches cut off at tile borders.
         break;
       }
 

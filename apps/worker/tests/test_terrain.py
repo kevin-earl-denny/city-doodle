@@ -874,6 +874,20 @@ class TestBayGeneration:
         assert len(bays) == 1
         assert bays[0].properties["is_river_mouth"] is True
 
+    def test_bay_area_matches_geometry(self):
+        """A bay's area property equals its emitted polygon's area (CITY-690)."""
+        from shapely.geometry import shape
+
+        from city_worker.terrain.noise import generate_heightfield
+
+        checked = 0
+        for seed in range(6):
+            hf = generate_heightfield(seed, 1, 1, 256.0, 128, scale=0.012)
+            for f in extract_bays(hf, 0.45, 1, 1, 256.0):
+                assert f.properties["area"] == pytest.approx(shape(f.geometry).area)
+                checked += 1
+        assert checked > 0
+
     def test_bay_generation_deterministic(self):
         """Same terrain produces identical bays."""
         hf = self._inlet_heightfield()
