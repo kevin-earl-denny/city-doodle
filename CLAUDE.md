@@ -132,7 +132,7 @@ Any `major` verdict on the head blocks it until a new push. A push invalidates e
 
 - Install once per clone: `git config --local core.hooksPath .githooks`. This also applies to worktrees.
   - **pre-commit** refuses `.env` / `.env.*` files (except `.env.example`).
-  - **pre-push** lints the files you changed (ruff for Python; eslint for `apps/web`), runs `tsc`, and warns on multiple Alembic heads.
+  - **pre-push** lints the whole pushed tree (ruff check + format for `apps/api`, `apps/worker`, `lib`; eslint for `apps/web`) when Python or web files changed, runs `tsc`, and warns on multiple Alembic heads. CI's Lint workflow checks the same scope. ruff is pinned in the `dev` extra (`pip install -e '.[dev]'` or `uvx ruff@<pin>`); a different local version gets a warning.
   - Bypass with `--no-verify` only after running those checks another way.
 - **Alembic:** `bin/migrations check` must report one head. Revision ids must be unique. Run `bin/migrations fix-heads` after concurrent migration merges.
 - **Read the failing log before fixing anything:** `gh pr checks <n> --repo kevin-earl-denny/city-doodle`, then `gh run view <id> --log-failed`.

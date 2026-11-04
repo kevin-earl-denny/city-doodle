@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Pre-push: run lint and type checks locally before a push reaches CI.
 #
-#   ruff check + ruff format --check   changed .py files under apps/api, apps/worker, lib
-#   eslint                             changed .ts/.tsx/.js/.jsx files under apps/web
+#   ruff check + ruff format --check   WHOLE tree (apps/api, apps/worker, lib) when a
+#                                      .py file there or the ruff config changed
+#   eslint (whole apps/web project)    when anything under apps/web or packages/ changed
 #   tsc --noEmit (whole web project)   when anything under apps/web or packages/ was
 #                                      added, modified, renamed OR deleted
 #   bin/migrations check               when apps/api/alembic changed (warning only)
 #
-# Lint is scoped to files changed on the pushed commits (vs. their merge-base
-# with origin/main) because the tree is not yet lint-clean as a whole; a
-# whole-tree gate would block every push. Touching a file means owning its lint.
+# Lint covers the whole tree, not just the changed files (CITY-651: main is
+# lint-clean, and CI's Lint workflow checks the same scope). The changed files
+# only decide WHICH checks run, so a docs-only push skips them. ruff is pinned
+# (pyproject.toml dev extra, lint.yml); a different local ruff gets a warning.
 #
 # What gets checked is the PUSHED tree of each ref, not the working tree: each
 # ref's commit is exported with `git archive` into a temp dir and linted there.
@@ -91,9 +93,10 @@ web_bin() {
 # ── Per-ref check ─────────────────────────────────────────────────────────────
 # Usage: check_ref <local ref> <local sha>
 check_ref() {
-  local ref="$1" sha="$2" base path tree link key
-  local py_files=() web_files=() web_changed="" alembic_changed=""
-  local acmr_list="$LIST_DIR/acmr" all_list="$LIST_DIR/all"
+  local ref="$1" sha="$2" base path tree link key dir
+  local py_changed="" web_changed="" alembic_changed=""
+  local ruff_dirs=()
+  local all_list="$LIST_DIR/all"
 
   base=$(git merge-base "$BASE_REF" "$sha" 2>/dev/null || true)
   if [[ -z "$base" ]]; then
@@ -110,24 +113,20 @@ check_ref() {
   fi
   CHECKED_KEYS+=" $key"
 
-  if ! git diff --name-only -z --diff-filter=ACMR "$base" "$sha" > "$acmr_list" ||
-     ! git diff --name-only -z --no-renames "$base" "$sha" > "$all_list"; then
+  if ! git diff --name-only -z --no-renames "$base" "$sha" > "$all_list"; then
     add_failure "could not list the files changed on $ref (git diff failed)"
     return 0
   fi
 
-  # NUL-separated (-z) so non-ASCII / odd paths aren't C-quoted and dropped.
-  # Files to lint: added/copied/modified/renamed (they exist in the pushed tree).
+  # Triggers: any change INCLUDING deletions (--no-renames splits a rename into
+  # delete + add), so deleting an imported module still runs tsc. NUL-separated
+  # (-z) so non-ASCII / odd paths aren't C-quoted and dropped. What runs then
+  # checks the whole pushed tree, not just these paths.
   while IFS= read -r -d '' path; do
     case "$path" in
-      apps/api/*.py | apps/worker/*.py | lib/*.py) py_files+=("$path") ;;
-      apps/web/*.ts | apps/web/*.tsx | apps/web/*.js | apps/web/*.jsx) web_files+=("$path") ;;
+      apps/api/*.py | apps/worker/*.py | lib/*.py | pyproject.toml | ruff.toml | .ruff.toml)
+        py_changed=1 ;;
     esac
-  done < "$acmr_list"
-
-  # Triggers: any change INCLUDING deletions (--no-renames splits a rename into
-  # delete + add), so deleting an imported module still runs tsc.
-  while IFS= read -r -d '' path; do
     case "$path" in
       apps/web/* | packages/*) web_changed=1 ;;
     esac
@@ -136,7 +135,7 @@ check_ref() {
     esac
   done < "$all_list"
 
-  if [[ ${#py_files[@]} -eq 0 && -z "$web_changed" && -z "$alembic_changed" ]]; then
+  if [[ -z "$py_changed" && -z "$web_changed" && -z "$alembic_changed" ]]; then
     return 0
   fi
 
@@ -160,18 +159,27 @@ check_ref() {
   [[ "$MULTI_REF" == 1 ]] && suffix=" [$ref]"
   echo "$HOOK checking $ref ($(git rev-parse --short "$sha"))..."
 
-  # 1. ruff
-  if [[ ${#py_files[@]} -gt 0 ]]; then
+  # 1. ruff (whole tree)
+  for dir in apps/api apps/worker lib; do
+    [[ -d "$tree/$dir" ]] && ruff_dirs+=("$dir")
+  done
+  if [[ -n "$py_changed" && ${#ruff_dirs[@]} -gt 0 ]]; then
     if [[ ${#RUFF[@]} -eq 0 ]] || ! "${RUFF[@]}" --version &>/dev/null; then
       add_failure "ruff is not installed (brew install ruff, or install uv)"
     else
-      echo "$HOOK ruff (${#py_files[@]} files)..."
-      run_check "ruff check (fix: ruff check --fix <files>)$suffix" \
+      local want have
+      want=$(grep -oE 'ruff==[0-9]+\.[0-9]+\.[0-9]+' "$tree/pyproject.toml" 2>/dev/null | head -1 | cut -d= -f3)
+      have=$("${RUFF[@]}" --version 2>/dev/null | awk '{print $2}')
+      if [[ -n "$want" && "$have" != "$want" ]]; then
+        echo "$HOOK WARNING: ruff $have here, but CI pins $want; format results can differ (uvx ruff@$want, or pip install -e '.[dev]')."
+      fi
+      echo "$HOOK ruff (whole tree: ${ruff_dirs[*]})..."
+      run_check "ruff check (fix: ruff check --fix ${ruff_dirs[*]})$suffix" \
         bash -c 'cd "$1" && shift && exec "$@"' _ "$tree" \
-        "${RUFF[@]}" check --no-cache --output-format=concise "${py_files[@]}"
-      run_check "ruff format (fix: ruff format <files>)$suffix" \
+        "${RUFF[@]}" check --no-cache --output-format=concise "${ruff_dirs[@]}"
+      run_check "ruff format (fix: ruff format ${ruff_dirs[*]})$suffix" \
         bash -c 'cd "$1" && shift && exec "$@"' _ "$tree" \
-        "${RUFF[@]}" format --no-cache --check --diff --quiet "${py_files[@]}"
+        "${RUFF[@]}" format --no-cache --check --diff --quiet "${ruff_dirs[@]}"
     fi
   fi
 
@@ -182,19 +190,20 @@ check_ref() {
     if ! git diff --quiet HEAD "$sha" -- package-lock.json apps/web/package-lock.json 2>/dev/null; then
       echo "$HOOK WARNING: $ref changes package-lock.json relative to this checkout; eslint/tsc run with this checkout's node_modules (run 'npm ci' on that ref if results look wrong)."
     fi
-    local eslint tsc web_args=()
+    local eslint tsc
     eslint=$(web_bin eslint || true)
     tsc=$(web_bin tsc || true)
 
-    if [[ ${#web_files[@]} -gt 0 ]]; then
-      if [[ -z "$eslint" ]]; then
-        add_failure "eslint is not installed (run 'npm ci' at the repo root)"
-      else
-        echo "$HOOK eslint (${#web_files[@]} files)..."
-        for path in "${web_files[@]}"; do web_args+=("${path#apps/web/}"); done
-        run_check "eslint$suffix" bash -c 'cd "$1" && shift && exec "$@"' _ \
-          "$tree/apps/web" "$eslint" --no-warn-ignored "${web_args[@]}"
-      fi
+    if [[ -z "$eslint" ]]; then
+      add_failure "eslint is not installed (run 'npm ci' at the repo root)"
+    elif [[ ! -f "$tree/apps/web/eslint.config.js" ]]; then
+      add_failure "eslint: $ref has no apps/web/eslint.config.js"
+    else
+      # Whole project, errors only: warnings don't block here or in CI's Lint
+      # workflow, and printing ~90 of them on every push buries the errors.
+      echo "$HOOK eslint (whole apps/web)..."
+      run_check "eslint (apps/web)$suffix" bash -c 'cd "$1" && shift && exec "$@"' _ \
+        "$tree/apps/web" "$eslint" --quiet .
     fi
 
     if [[ -z "$tsc" ]]; then
