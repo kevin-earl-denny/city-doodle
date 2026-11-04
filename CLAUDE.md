@@ -29,6 +29,7 @@ Hand-maintained: edit it directly, in a PR, like any other file.
 - **Every bug fix ships a regression test** in the same PR, or the PR says why it can't.
 - **Never swallow errors.** A caught exception that returns a fallback is worse than a loud failure. Caught DB errors roll back the session.
 - **Stage explicit paths** (`git add -- <paths>`), never `git add -A`: other agents may share the checkout.
+- **Never use `git stash`.** `refs/stash` is shared by every worktree, so two agents' stashes swap. Commit WIP to your branch instead (`git commit -m "WIP"`, squash later).
 
 ---
 
