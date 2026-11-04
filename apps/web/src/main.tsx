@@ -10,6 +10,13 @@ import './index.css'
 
 const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY?.trim()
 
+// Drop the pre-Clerk session token (CITY-644); nothing reads or accepts it any more.
+try {
+  localStorage.removeItem('auth_token')
+} catch {
+  // Storage unavailable (private mode / blocked): nothing to clean up.
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

@@ -4,8 +4,10 @@ Flow for every authenticated request (AUTH_MODE=production):
 
 1. ``verify_clerk_token`` checks the ``Authorization: Bearer <jwt>`` session token:
    RS256 signature against the instance JWKS (``https://<CLERK_DOMAIN>/.well-known/jwks.json``,
-   keys cached by PyJWKClient), ``exp``/``nbf``/``iat``, ``iss`` == ``https://<CLERK_DOMAIN>``
-   and, when present, ``azp`` against the allowed origins.
+   keys cached by PyJWKClient), ``exp``/``nbf``/``iat``, ``iss`` == ``https://<CLERK_DOMAIN>``,
+   a ``sid`` claim (only Clerk *session* tokens carry one, so JWT-template tokens signed by
+   the same keys are refused) and ``azp`` against the allowed origins (required when
+   CLERK_AUTHORIZED_PARTIES is set, otherwise checked when present).
 2. ``resolve_clerk_user`` maps the Clerk user id (``sub``) to a local ``User``:
    by ``users.clerk_user_id``; else, on first sign-in, by the Clerk account's primary
    email **only if Clerk reports it verified** (links pre-Clerk accounts so they keep
@@ -40,6 +42,12 @@ logger = logging.getLogger(__name__)
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
 _HTTP_TIMEOUT_SECS = 5.0
+# JWKS fetch timeout. PyJWKClient (>=2.14) holds a client-wide lock while it
+# refetches on a signing-key cache miss, so keep a slow endpoint from queueing
+# auth threads for PyJWT's default 30s. Known kids are served from the
+# lru_cache (cache_keys=True) without taking that lock, and unknown-kid
+# refetches are rate-limited by PyJWKClient's 30s cooldown.
+_JWKS_TIMEOUT_SECS = 5.0
 # Small clock-skew allowance; Clerk session tokens live ~60s.
 _LEEWAY_SECS = 5
 _RESOLVE_ATTEMPTS = 3
@@ -71,7 +79,10 @@ def get_jwks_client() -> PyJWKClient:
         raise ClerkNotConfiguredError("CLERK_DOMAIN is not set")
     if _jwks_client is None or _jwks_client_domain != settings.clerk_domain:
         _jwks_client = PyJWKClient(
-            f"{_issuer()}/.well-known/jwks.json", cache_keys=True, lifespan=3600
+            f"{_issuer()}/.well-known/jwks.json",
+            cache_keys=True,
+            lifespan=3600,
+            timeout=_JWKS_TIMEOUT_SECS,
         )
         _jwks_client_domain = settings.clerk_domain
     return _jwks_client
@@ -103,10 +114,13 @@ def verify_clerk_token(token: str) -> dict[str, Any]:
         algorithms=["RS256"],
         issuer=_issuer(),
         leeway=_LEEWAY_SECS,
-        options={"require": ["sub", "exp", "iat", "iss"]},
+        options={"require": ["sub", "exp", "iat", "iss", "sid"]},
     )
     azp = claims.get("azp")
-    if azp is not None and not _authorized_party_allowed(azp):
+    if azp is None:
+        if settings.clerk_authorized_parties:
+            raise jwt.MissingRequiredClaimError("azp")
+    elif not _authorized_party_allowed(azp):
         raise jwt.InvalidTokenError(f"azp {azp!r} is not an authorized party")
     return claims
 
@@ -143,9 +157,10 @@ class ClerkEmail:
 async def fetch_clerk_primary_email(clerk_user_id: str) -> ClerkEmail | None:
     """Return the primary email of a Clerk user from the Clerk Backend API.
 
-    ``None`` when the user has no primary email. Raises ``HTTPException(503)``
-    if Clerk is unreachable or CLERK_SECRET_KEY is missing, so a transient
-    failure never creates a duplicate account.
+    ``None`` when the user has no primary email. Raises ``HTTPException(401)``
+    if Clerk no longer knows the user (deleted after the token was issued), and
+    ``HTTPException(503)`` if Clerk is unreachable or CLERK_SECRET_KEY is
+    missing, so a transient failure never creates a duplicate account.
     """
     if not settings.clerk_secret_key:
         logger.error("CLERK_SECRET_KEY is not set; cannot resolve first-time Clerk user")
@@ -159,6 +174,9 @@ async def fetch_clerk_primary_email(clerk_user_id: str) -> ClerkEmail | None:
                 f"{CLERK_API_BASE}/users/{clerk_user_id}",
                 headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
             )
+            if resp.status_code == 404:
+                logger.info("Clerk user %s not found; rejecting token", clerk_user_id)
+                raise _unauthorized("Unknown user")
             resp.raise_for_status()
             data = resp.json()
     except (httpx.HTTPError, ValueError) as exc:

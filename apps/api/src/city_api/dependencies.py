@@ -36,8 +36,8 @@ async def get_current_user_model(
     """
     Get the current authenticated user as a User model.
 
-    In dev mode (AUTH_MODE=dev):
-        - Accepts X-User-Id header for testing, else DEV_USER_ID
+    In dev mode (AUTH_MODE=dev, local/tests only; refused on Fly):
+        - Accepts X-User-Id header for testing, else DEV_USER_ID; the user must exist
 
     In production mode (AUTH_MODE=production):
         - Requires Authorization: Bearer <Clerk session JWT>
@@ -65,8 +65,10 @@ async def get_current_user(
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
     db: AsyncSession = Depends(get_db),
 ) -> UUID:
-    """Get the current authenticated user ID (see get_current_user_model)."""
-    if settings.auth_mode == "dev":
-        return _dev_user_id(x_user_id)
+    """Get the current authenticated user ID (see get_current_user_model).
+
+    Always resolves the user row, so in dev mode an X-User-Id that does not
+    match an existing user is rejected with 401.
+    """
     user = await get_current_user_model(authorization, x_user_id, db)
     return user.id

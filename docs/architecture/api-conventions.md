@@ -75,12 +75,17 @@ Or for validation errors:
 
 ## Authentication
 
-All endpoints (except `/auth/*`) require Bearer token:
+All endpoints except `/`, `/health` and the OpenAPI docs require a Clerk session token:
 ```
-Authorization: Bearer <token>
+Authorization: Bearer <Clerk session JWT>
 ```
 
-Tokens are obtained via `/auth/login` or `/auth/register`.
+Users sign up and sign in through Clerk in the web app (CITY-644). The web client gets the
+short-lived token from Clerk's `getToken()` before every request. The API verifies it against
+the Clerk instance JWKS and resolves the City Doodle user (`GET /auth/me` returns it). On first
+sign-in the user is linked to an existing account by verified email or created. Missing or
+invalid tokens get `401`. `AUTH_MODE=dev` (local development and tests only, refused on Fly)
+trusts an `X-User-Id` header instead.
 
 ## World Ownership
 

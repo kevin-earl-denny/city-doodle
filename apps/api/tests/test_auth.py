@@ -10,17 +10,19 @@ import json
 import time
 from uuid import UUID
 
+import httpx
 import jwt
 import pytest
 from city_api import clerk_auth
 from city_api.clerk_auth import ClerkEmail, primary_email_from_clerk_user, verify_clerk_token
-from city_api.config import settings
+from city_api.config import Settings, settings
 from city_api.models import User
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from httpx import AsyncClient
 from jwt import PyJWKClient
 from jwt.algorithms import RSAAlgorithm
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from tests.conftest import TEST_USER_ID, TEST_WORLD_ID, get_test_engine
@@ -47,11 +49,14 @@ def make_token(
     iss: str = ISSUER,
     exp_offset: int = 60,
     azp: str | None = APP_ORIGIN,
+    sid: str | None = "sess_test123",
 ) -> str:
     now = int(time.time())
     claims = {"sub": sub, "iss": iss, "iat": now, "nbf": now, "exp": now + exp_offset}
     if azp is not None:
         claims["azp"] = azp
+    if sid is not None:
+        claims["sid"] = sid
     return jwt.encode(claims, key, algorithm="RS256", headers={"kid": kid})
 
 
@@ -135,9 +140,32 @@ class TestVerifyClerkToken:
         azp = "https://city-doodle-web-abc123-kds.vercel.app"
         assert verify_clerk_token(make_token(azp=azp))["azp"] == azp
 
-    def test_missing_azp_is_accepted(self, clerk):
-        # Backend-minted tokens (e.g. Clerk testing tokens) may omit azp.
+    def test_missing_azp_rejected_when_parties_configured(self, clerk):
+        with pytest.raises(jwt.MissingRequiredClaimError):
+            verify_clerk_token(make_token(azp=None))
+
+    def test_missing_azp_accepted_without_configured_parties(self, clerk, monkeypatch):
+        monkeypatch.setattr(settings, "clerk_authorized_parties", [])
         assert verify_clerk_token(make_token(azp=None))["sub"] == "user_abc123"
+
+    def test_azp_checked_against_cors_when_parties_unset(self, clerk, monkeypatch):
+        monkeypatch.setattr(settings, "clerk_authorized_parties", [])
+        monkeypatch.setattr(settings, "cors_origins", ["https://city-doodle-web.vercel.app"])
+        monkeypatch.setattr(settings, "frontend_url", "")
+        assert verify_clerk_token(make_token(azp="https://city-doodle-web.vercel.app"))
+        with pytest.raises(jwt.InvalidTokenError):
+            verify_clerk_token(make_token(azp="https://attacker.example"))
+
+    def test_missing_sid_rejected(self, clerk):
+        # JWT-template tokens share the instance keys and issuer but carry no sid.
+        with pytest.raises(jwt.MissingRequiredClaimError):
+            verify_clerk_token(make_token(sid=None))
+
+    def test_jwks_client_uses_short_timeout(self, clerk, monkeypatch):
+        monkeypatch.setattr(clerk_auth, "_jwks_client", None)
+        client = clerk_auth.get_jwks_client()
+        assert client.timeout == 5.0
+        assert client.uri == f"{ISSUER}/.well-known/jwks.json"
 
     def test_hs256_token_rejected(self, clerk):
         token = jwt.encode(
@@ -369,3 +397,89 @@ class TestClerkPayloadParsing:
         with pytest.raises(HTTPException) as exc:
             await clerk_auth.fetch_clerk_primary_email("user_x")
         assert exc.value.status_code == 503
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [(404, 401), (500, 503)],
+    )
+    async def test_clerk_api_errors(self, monkeypatch, status, expected):
+        """A user deleted in Clerk is unauthorized (401); a Clerk outage is 503."""
+        monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_dummy")
+        real_client = httpx.AsyncClient
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/v1/users/user_gone"
+            assert request.headers["Authorization"] == "Bearer sk_test_dummy"
+            return httpx.Response(status, json={"errors": []})
+
+        monkeypatch.setattr(
+            clerk_auth.httpx,
+            "AsyncClient",
+            lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+        )
+        with pytest.raises(HTTPException) as exc:
+            await clerk_auth.fetch_clerk_primary_email("user_gone")
+        assert exc.value.status_code == expected
+
+    async def test_clerk_api_success_parses_email(self, monkeypatch):
+        monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_dummy")
+        real_client = httpx.AsyncClient
+        payload = {
+            "primary_email_address_id": "idn_1",
+            "email_addresses": [
+                {"id": "idn_1", "email_address": "a@x.com", "verification": {"status": "verified"}}
+            ],
+        }
+        monkeypatch.setattr(
+            clerk_auth.httpx,
+            "AsyncClient",
+            lambda **kw: real_client(
+                transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload)), **kw
+            ),
+        )
+        assert await clerk_auth.fetch_clerk_primary_email("user_ok") == ClerkEmail("a@x.com", True)
+
+
+class TestAuthModeConfig:
+    """AUTH_MODE must fail closed (reviewer-f, #477)."""
+
+    def test_unset_auth_mode_defaults_to_production(self, monkeypatch):
+        monkeypatch.delenv("AUTH_MODE", raising=False)
+        monkeypatch.delenv("FLY_APP_NAME", raising=False)
+        assert Settings(_env_file=None).auth_mode == "production"
+
+    def test_unknown_auth_mode_rejected(self, monkeypatch):
+        monkeypatch.setenv("AUTH_MODE", "prod")
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None)
+
+    def test_dev_auth_mode_refused_on_fly(self, monkeypatch):
+        monkeypatch.setenv("AUTH_MODE", "dev")
+        monkeypatch.setenv("FLY_APP_NAME", "city-doodle-api")
+        with pytest.raises(ValidationError, match="not allowed on Fly"):
+            Settings(_env_file=None)
+
+    def test_production_auth_mode_allowed_on_fly(self, monkeypatch):
+        monkeypatch.setenv("AUTH_MODE", "production")
+        monkeypatch.setenv("FLY_APP_NAME", "city-doodle-api")
+        assert Settings(_env_file=None).auth_mode == "production"
+
+    def test_dev_auth_mode_allowed_off_fly(self, monkeypatch):
+        monkeypatch.setenv("AUTH_MODE", "dev")
+        monkeypatch.delenv("FLY_APP_NAME", raising=False)
+        assert Settings(_env_file=None).auth_mode == "dev"
+
+
+class TestDevMode:
+    """Dev mode (X-User-Id) still requires the user to exist."""
+
+    async def test_unknown_x_user_id_rejected(self, client: AsyncClient):
+        assert settings.auth_mode == "dev"
+        response = await client.get(
+            "/worlds", headers={"X-User-Id": "00000000-0000-0000-0000-0000000000ff"}
+        )
+        assert response.status_code == 401
+
+    async def test_known_x_user_id_accepted(self, client: AsyncClient):
+        response = await client.get("/worlds", headers={"X-User-Id": str(TEST_USER_ID)})
+        assert response.status_code == 200

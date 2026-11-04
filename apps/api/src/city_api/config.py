@@ -1,8 +1,10 @@
 """Application configuration."""
 
 import json
+import os
+from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,9 +19,11 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://localhost/city_doodle"
     database_url_sync: str = "postgresql://localhost/city_doodle"
 
-    # Auth mode: "dev" trusts the X-User-Id header (local/tests only);
-    # "production" requires a Clerk session JWT as `Authorization: Bearer <jwt>`.
-    auth_mode: str = "dev"
+    # Auth mode. "production" (the default, so a missing AUTH_MODE fails closed)
+    # requires a Clerk session JWT as `Authorization: Bearer <jwt>`. "dev" trusts
+    # the X-User-Id header and is for local development and tests only: it must
+    # be set explicitly and is refused on Fly (see _refuse_dev_auth_on_fly).
+    auth_mode: Literal["dev", "production"] = "production"
 
     # Clerk (CITY-644). CLERK_DOMAIN is the Frontend API hostname from the Clerk
     # dashboard (e.g. "your-app.clerk.accounts.dev"); it is the JWT issuer and
@@ -59,6 +63,16 @@ class Settings(BaseSettings):
             # Fall back to comma-separated
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
+
+    @model_validator(mode="after")
+    def _refuse_dev_auth_on_fly(self):
+        """Fail startup rather than trust X-User-Id on a deployed Fly machine."""
+        if self.auth_mode == "dev" and os.environ.get("FLY_APP_NAME"):
+            raise ValueError(
+                "AUTH_MODE=dev trusts the X-User-Id header and is not allowed on Fly "
+                "(FLY_APP_NAME is set); use AUTH_MODE=production with Clerk configured"
+            )
+        return self
 
 
 settings = Settings()
