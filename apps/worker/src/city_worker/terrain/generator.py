@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from city_worker.terrain.bays import BayConfig, apply_bay_erosion, extract_bays
+from city_worker.terrain.bays import BayConfig, extract_bays
 from city_worker.terrain.clip import clip_features_to_tile
 from city_worker.terrain.geographic_masks import apply_geographic_mask
 from city_worker.terrain.noise import apply_erosion, generate_heightfield
@@ -181,24 +181,10 @@ class TerrainGenerator:
                 tile_x=tx,
                 tile_y=ty,
                 tile_size=cfg.tile_size,
-                seed=cfg.world_seed + tx * 1000 + ty,  # Tile-specific seed
                 flow_accumulation=flow_accumulation,
                 config=bay_config,
             )
             features.extend(bays)
-
-            # Apply bay erosion to heightfield so downstream features
-            # (beaches, rivers, lakes) see the carved-out bay depths
-            if bays:
-                heightfield = apply_bay_erosion(
-                    heightfield=heightfield,
-                    bay_features=bays,
-                    water_level=cfg.water_level,
-                    tile_x=tx,
-                    tile_y=ty,
-                    tile_size=cfg.tile_size,
-                    erosion_strength=cfg.bay_erosion_strength,
-                )
 
         # Collect bay polygons for beach exclusion (CITY-548)
         bay_polygons: list = []

@@ -85,7 +85,14 @@ def generate_heightfield(
 
     Returns:
         2D numpy array of heights normalized to [0, 1]
+
+    Raises:
+        ValueError: If tile_size or resolution is not positive.
     """
+    if tile_size <= 0 or resolution <= 0:
+        raise ValueError(
+            f"tile_size and resolution must be positive (got {tile_size}, {resolution})"
+        )
     simplex = OpenSimplex(seed=seed)
 
     # Build 1-D coordinate arrays in world space.
