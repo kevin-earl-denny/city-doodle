@@ -41,7 +41,7 @@ def _fractal_perturb_ring(
 
     for _it in range(iterations):
         new_pts: list[tuple[float, float]] = []
-        amp = amplitude * (0.5 ** _it)  # halve amplitude each iteration
+        amp = amplitude * (0.5**_it)  # halve amplitude each iteration
 
         for k in range(len(pts) - 1):
             x0, y0 = pts[k]
@@ -399,10 +399,10 @@ def calculate_flow_accumulation(
         neighbours[k] = padded[ri : ri + h, ci : ci + w]
 
     # For each cell, find the direction of the lowest neighbour.
-    min_neighbour_idx = np.argmin(neighbours, axis=0)         # (h, w)
-    min_neighbour_val = np.take_along_axis(
-        neighbours, min_neighbour_idx[np.newaxis], axis=0
-    )[0]  # (h, w)
+    min_neighbour_idx = np.argmin(neighbours, axis=0)  # (h, w)
+    min_neighbour_val = np.take_along_axis(neighbours, min_neighbour_idx[np.newaxis], axis=0)[
+        0
+    ]  # (h, w)
 
     # Flat destination index for each cell (-1 = no outflow).
     dest_flat = np.full(h * w, -1, dtype=np.intp)
@@ -635,7 +635,11 @@ def extract_rivers(
     cell_size = tile_size / w
 
     # Use pre-computed flow accumulation if provided (CITY-508)
-    flow = flow_accumulation if flow_accumulation is not None else calculate_flow_accumulation(heightfield)
+    flow = (
+        flow_accumulation
+        if flow_accumulation is not None
+        else calculate_flow_accumulation(heightfield)
+    )
 
     # Find river cells (high flow, above water level for now)
     river_mask = (flow >= flow_threshold) & (heightfield >= water_level * 0.8)
@@ -740,10 +744,7 @@ def extract_rivers(
                             for di, dj in directions:
                                 ni, nj = ei + di, ej + dj
                                 if 0 <= ni < h and 0 <= nj < w:
-                                    if (
-                                        not visited[ni, nj]
-                                        and heightfield[ni, nj] < best_h
-                                    ):
+                                    if not visited[ni, nj] and heightfield[ni, nj] < best_h:
                                         best_h = heightfield[ni, nj]
                                         best_next = (ni, nj)
                             if best_next is None:
@@ -838,7 +839,9 @@ def extract_rivers(
                 # CITY-490: Interpolate per-vertex widths onto the
                 # smoothed line. Build cumulative-distance parameterisation
                 # of the original path, then sample at each smoothed vertex.
-                smoothed_widths = _interpolate_widths(coords, raw_widths, list(smoothed_line.coords))
+                smoothed_widths = _interpolate_widths(
+                    coords, raw_widths, list(smoothed_line.coords)
+                )
 
                 # CITY-683: delta detection needs the flow direction at the
                 # mouth. Take it from the dense smoothed curve (its last 6
@@ -848,7 +851,9 @@ def extract_rivers(
                 tail = smoothed[-6:]
                 mdx, mdy = tail[-1][0] - tail[0][0], tail[-1][1] - tail[0][1]
                 mag = (mdx * mdx + mdy * mdy) ** 0.5
-                mouth_direction = [round(mdx / mag, 4), round(mdy / mag, 4)] if mag > 1e-10 else None
+                mouth_direction = (
+                    [round(mdx / mag, 4), round(mdy / mag, 4)] if mag > 1e-10 else None
+                )
 
                 features.append(
                     TerrainFeature(
@@ -913,7 +918,9 @@ def _classify_water_body(
 
     # Check if water touches tile edge (likely ocean or large bay)
     visited_water = np.zeros_like(water_mask, dtype=bool)
-    water_cells = _flood_fill(water_mask, visited_water, water_neighbors[0][0], water_neighbors[0][1])
+    water_cells = _flood_fill(
+        water_mask, visited_water, water_neighbors[0][0], water_neighbors[0][1]
+    )
     water_cell_count = len(water_cells)
 
     # Check if water region touches tile edge
@@ -1152,9 +1159,7 @@ def extract_beaches(
 
             extended_cells = list(segment_cells) + water_fringe
 
-            poly = _cells_to_polygon(
-                extended_cells, tile_x, tile_y, tile_size, cell_size, w
-            )
+            poly = _cells_to_polygon(extended_cells, tile_x, tile_y, tile_size, cell_size, w)
             if poly is not None and poly.is_valid:
                 # CITY-546: Skip beaches that overlap a river buffer
                 if river_buffers:
@@ -1218,7 +1223,9 @@ def extract_beaches(
                                                 beach_type = "river"
                                                 break
                                         except (GEOSException, TopologicalError) as e:
-                                            logger.warning("Lake beach-river distance check failed: %s", e)
+                                            logger.warning(
+                                                "Lake beach-river distance check failed: %s", e
+                                            )
                                 break
                         except (GEOSException, TopologicalError) as e:
                             logger.warning("Beach-lake intersection check failed: %s", e)
@@ -1443,9 +1450,7 @@ def extract_lakes(
 
         region_cells = list(zip(*np.where(region_mask)))
 
-        poly = _cells_to_polygon(
-            region_cells, tile_x, tile_y, tile_size, cell_size, w
-        )
+        poly = _cells_to_polygon(region_cells, tile_x, tile_y, tile_size, cell_size, w)
         if poly is not None and poly.is_valid:
             lake_type, properties = _classify_lake_type(
                 poly,
