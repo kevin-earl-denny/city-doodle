@@ -1,8 +1,12 @@
 """Noise utilities for terrain generation using OpenSimplex."""
 
+import logging
+
 import numpy as np
 from numpy.typing import NDArray
 from opensimplex import OpenSimplex
+
+logger = logging.getLogger(__name__)
 
 
 class SeededNoise:
@@ -96,13 +100,19 @@ def generate_heightfield(
     # Accumulate fBm octaves using vectorized noise2array.
     total = np.zeros((resolution, resolution), dtype=np.float64)
     amplitude = 1.0
-    frequency = scale
     max_amplitude = 0.0
 
     # CITY-650: skip octaves finer than the sample grid can represent.
     # Above half the Nyquist rate (resolution / 4 cycles per tile) an
     # octave aliases into per-sample speckle that shows up as puddles.
     max_frequency = resolution / (4.0 * tile_size)
+    if scale > max_frequency:
+        logger.warning(
+            "height_scale %.4f exceeds the %.4f limit for tile_size=%s "
+            "resolution=%s; clamping to avoid aliased terrain",
+            scale, max_frequency, tile_size, resolution,
+        )
+    frequency = min(scale, max_frequency)
 
     for octave in range(octaves):
         if octave > 0 and frequency > max_frequency:
