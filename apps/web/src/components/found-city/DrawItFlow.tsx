@@ -119,6 +119,7 @@ export function DrawItFlow({
     <FlowForm
       panelId={panelId}
       tabId={tabId}
+      step={step}
       onSubmit={handleSubmit}
       footer={
         <FlowFooter

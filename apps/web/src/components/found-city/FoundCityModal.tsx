@@ -79,7 +79,16 @@ function seedProblem(seedText: string): string | null {
 }
 
 const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]';
+
+/** Elements Tab can reach inside `root`, in DOM order. */
+function tabbables(root: HTMLElement): HTMLElement[] {
+  // tabIndex < 0 excludes roving-tabindex radios, headings focused by script and
+  // the dialog itself; [hidden] excludes panels of inactive modes.
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+    (el) => el.tabIndex >= 0 && !el.closest("[hidden]"),
+  );
+}
 
 interface FoundCityModalProps {
   onClose: () => void;
@@ -101,37 +110,70 @@ export function FoundCityModal({ onClose, onCreated }: FoundCityModalProps) {
   const close = useCallback(() => {
     if (!isFounding) onClose();
   }, [isFounding, onClose]);
+  // The document listeners below are bound once; read the latest close through a ref.
+  const closeRef = useRef(close);
+  closeRef.current = close;
 
-  // Focus the dialog on open and give focus back to the opener on close.
+  // Focus the dialog on open, lock page scroll, and give focus back to the opener on close.
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     dialogRef.current?.focus();
-    return () => opener?.focus?.();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      opener?.focus?.();
+    };
   }, []);
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-      return;
-    }
-    if (e.key !== "Tab" || !dialogRef.current) return;
-    // Trap focus inside the dialog.
-    const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-      (el) => el.offsetParent !== null || el === document.activeElement,
-    );
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    if (e.shiftKey && (active === first || active === dialogRef.current)) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && active === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
+  // Keyboard handling lives on the document, not the dialog, so Escape and the
+  // Tab trap keep working when focus has fallen out of the dialog (e.g. the
+  // focused element was removed or disabled). Escape inside a popover that
+  // stops propagation never reaches here.
+  useEffect(() => {
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      const dialog = dialogRef.current;
+      if (!dialog || e.defaultPrevented) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const focusable = tabbables(dialog);
+      if (focusable.length === 0) {
+        e.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      const inside = active instanceof Node && dialog.contains(active);
+      const atStart = active === first || active === dialog || !focusable.includes(active as HTMLElement);
+      if (!inside) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && atStart) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    // If focus lands outside the dialog anyway (click-through, programmatic), pull it back.
+    const handleFocusIn = (e: FocusEvent) => {
+      const dialog = dialogRef.current;
+      if (dialog && e.target instanceof Node && !dialog.contains(e.target)) dialog.focus();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("focusin", handleFocusIn);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("focusin", handleFocusIn);
+    };
+  }, []);
 
   const handleTabKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -142,17 +184,15 @@ export function FoundCityModal({ onClose, onCreated }: FoundCityModalProps) {
   };
 
   const handleFound = async (name: string, settings: Partial<WorldSettings>) => {
+    if (isFounding) return;
     setFoundError(null);
     const trimmed = name.trim();
     if (!trimmed) {
       setFoundError("Every city needs a name. Try the dice.");
       return;
     }
-    const problem = seedProblem(seedText);
-    if (problem) {
-      setFoundError(problem);
-      return;
-    }
+    // An invalid seed is already flagged inline next to the seed field.
+    if (seedProblem(seedText)) return;
     try {
       const world = await createWorld.mutateAsync({ name: trimmed, seed: Number(seedText), settings });
       onCreated(world.id);
@@ -179,7 +219,6 @@ export function FoundCityModal({ onClose, onCreated }: FoundCityModalProps) {
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        onKeyDown={handleKeyDown}
         className="flex max-h-[90vh] w-[1080px] max-w-full flex-col overflow-clip rounded-[6px] bg-paper font-ui text-ink shadow-[0_30px_80px_color-mix(in_srgb,var(--color-ink)_35%,transparent),0_0_0_1px_color-mix(in_srgb,var(--color-ink)_8%,transparent)] outline-none"
       >
         <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b-[1.5px] border-contour px-7 py-5">

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { FoundCityModal } from "./FoundCityModal";
 import { GROWTH_STORIES, getGrowthStory } from "./growthStories";
@@ -188,5 +189,147 @@ describe("FoundCityModal", () => {
     fireEvent.click(describe);
     expect(screen.getByRole("tab", { name: /Draw it/ })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tooltip")).toHaveTextContent("Coming soon");
+  });
+
+  describe("keyboard and focus", () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>New world</button>
+          {open && <FoundCityModal onClose={() => setOpen(false)} onCreated={vi.fn()} />}
+        </>
+      );
+    }
+
+    it("focuses the dialog on open and returns focus to the opener on close", () => {
+      render(<Harness />);
+      const opener = screen.getByRole("button", { name: "New world" });
+      opener.focus();
+      fireEvent.click(opener);
+
+      expect(screen.getByRole("dialog")).toHaveFocus();
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(opener).toHaveFocus();
+    });
+
+    it("locks page scroll while open", () => {
+      const { unmount } = render(<FoundCityModal onClose={vi.fn()} onCreated={vi.fn()} />);
+      expect(document.body.style.overflow).toBe("hidden");
+      unmount();
+      expect(document.body.style.overflow).toBe("");
+    });
+
+    it("wraps Tab and Shift+Tab inside the dialog", () => {
+      renderModal();
+      const first = screen.getByRole("tab", { name: /Draw it/ });
+      const last = screen.getByRole("button", { name: /^Next:/ });
+
+      last.focus();
+      fireEvent.keyDown(last, { key: "Tab" });
+      expect(first).toHaveFocus();
+
+      fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+      expect(last).toHaveFocus();
+    });
+
+    it("skips roving-tabindex cards when wrapping", () => {
+      renderModal();
+      const first = screen.getByRole("tab", { name: /Draw it/ });
+      fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+      // The last tabbable is the primary button, not an unchecked card.
+      expect(screen.getByRole("button", { name: /^Next:/ })).toHaveFocus();
+    });
+
+    it("still handles Escape and Tab when focus has escaped to <body>", () => {
+      const { onClose } = renderModal();
+      (document.activeElement as HTMLElement).blur();
+      expect(document.body).toHaveFocus();
+
+      fireEvent.keyDown(document.body, { key: "Tab" });
+      expect(screen.getByRole("tab", { name: /Draw it/ })).toHaveFocus();
+
+      (document.activeElement as HTMLElement).blur();
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it("moves focus to the step heading when going back from the route", () => {
+      const { onClose } = renderModal();
+      next();
+
+      const landStep = screen.getByRole("button", { name: /The land/ });
+      landStep.focus();
+      fireEvent.click(landStep);
+
+      expect(screen.getByRole("heading", { name: "Where does your city begin?" })).toHaveFocus();
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it("keeps the current route step focusable and marked as current", () => {
+      renderModal();
+      next();
+      const current = screen.getByRole("button", { name: /How it grew/ });
+      expect(current).toHaveAttribute("aria-current", "step");
+      fireEvent.click(current);
+      expect(screen.getByRole("heading", { name: /grow\?$/ })).toBeInTheDocument();
+    });
+
+    it("arrows from the first story card when no story is picked yet", () => {
+      renderModal();
+      next();
+      const medieval = screen.getByRole("radio", { name: /^Medieval Tangle/ });
+      expect(medieval).toHaveAttribute("tabindex", "0");
+
+      fireEvent.keyDown(medieval, { key: "ArrowLeft" });
+      expect(screen.getByRole("radio", { name: /^Motor Sprawl/ })).toHaveAttribute("aria-checked", "true");
+    });
+
+    it("leaves slider arrow keys to the native range input", () => {
+      renderModal();
+      next();
+      const blocks = screen.getByRole("slider", { name: "Blocks" });
+      expect(blocks).toHaveAttribute("min", "50");
+      expect(blocks).toHaveAttribute("max", "300");
+      expect(blocks).toHaveAttribute("step", "5");
+
+      blocks.focus();
+      // fireEvent returns false if a handler called preventDefault.
+      expect(fireEvent.keyDown(blocks, { key: "ArrowRight" })).toBe(true);
+      expect(fireEvent.keyDown(blocks, { key: "ArrowLeft" })).toBe(true);
+      expect(blocks).toHaveFocus();
+
+      fireEvent.change(blocks, { target: { value: "155" } });
+      expect(blocks).toHaveAttribute("aria-valuetext", "155 m");
+    });
+
+    it("keeps focus on the Found button after a failed create, with one alert", async () => {
+      mutateAsync.mockRejectedValueOnce(new Error("World limit reached"));
+      renderModal();
+      next();
+      next();
+
+      const found = foundButton();
+      found.focus();
+      fireEvent.click(found);
+
+      await screen.findByText("World limit reached");
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      expect(foundButton()).toHaveFocus();
+    });
+
+    it("shows an invalid survey number once", () => {
+      renderModal();
+      next();
+      next();
+      fireEvent.change(screen.getByLabelText(/SURVEY Nº/), { target: { value: "" } });
+      fireEvent.click(foundButton());
+
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      expect(mutateAsync).not.toHaveBeenCalled();
+    });
   });
 });

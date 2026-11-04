@@ -4,7 +4,7 @@
  * radio group. A mode (Draw it, later Describe it) composes these.
  */
 
-import { useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowIcon, CheckIcon } from "./icons";
 import { CityLoader } from "../ui";
 
@@ -19,7 +19,7 @@ interface RouteStepsProps {
   labels: string[];
   /** 1-based current step. */
   current: number;
-  /** Furthest step reached; steps up to here (other than current) are clickable. */
+  /** Furthest step reached; steps up to here are buttons (the current one does nothing). */
   reached: number;
   onSelect: (step: number) => void;
 }
@@ -31,7 +31,9 @@ export function RouteSteps({ labels, current, reached, onSelect }: RouteStepsPro
         {labels.map((label, i) => {
           const n = i + 1;
           const state = n === current ? "current" : n < current ? "done" : "todo";
-          const clickable = n !== current && n <= reached;
+          // The current step stays a focusable button too, so clicking a step
+          // never removes the element that holds focus.
+          const isButton = n <= reached || n === current;
           const content = (
             <>
               <span
@@ -62,19 +64,20 @@ export function RouteSteps({ labels, current, reached, onSelect }: RouteStepsPro
                   className={`h-0 w-14 shrink-0 border-t-2 ${n <= current ? "border-solid border-ink" : "border-dashed border-contour"}`}
                 />
               )}
-              {clickable ? (
+              {isButton ? (
                 <button
                   type="button"
-                  onClick={() => onSelect(n)}
-                  className={`flex cursor-pointer items-center gap-2 rounded-full bg-transparent p-0 hover:underline ${FOCUS_RING}`}
+                  aria-current={state === "current" ? "step" : undefined}
+                  onClick={() => n !== current && onSelect(n)}
+                  className={`flex items-center gap-2 rounded-full bg-transparent p-0 ${
+                    state === "current" ? "cursor-default" : "cursor-pointer hover:underline"
+                  } ${FOCUS_RING}`}
                 >
                   {content}
-                  <span className="sr-only">(go back to this step)</span>
+                  {state !== "current" && <span className="sr-only">(go to this step)</span>}
                 </button>
               ) : (
-                <span className="flex items-center gap-2" aria-current={state === "current" ? "step" : undefined}>
-                  {content}
-                </span>
+                <span className="flex items-center gap-2">{content}</span>
               )}
             </li>
           );
@@ -91,7 +94,12 @@ export function RouteSteps({ labels, current, reached, onSelect }: RouteStepsPro
 export function StepHeading({ title, aside }: { title: string; aside: string }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <h2 className="m-0 font-display text-[44px] leading-[46px] font-extrabold tracking-[-0.025em] text-balance text-ink">
+      {/* Focused by FlowForm when the step changes (tabIndex -1: not in the Tab order). */}
+      <h2
+        tabIndex={-1}
+        data-step-heading=""
+        className="m-0 font-display text-[44px] leading-[46px] font-extrabold tracking-[-0.025em] text-balance text-ink outline-none"
+      >
         {title}
       </h2>
       <p className="m-0 font-hand text-[24px] leading-7 font-semibold text-coast">{aside}</p>
@@ -157,14 +165,20 @@ interface PrimaryButtonProps {
   size?: "normal" | "large";
 }
 
-/** Submits the flow's form. */
+/**
+ * Submits the flow's form. While pending it is aria-disabled rather than
+ * disabled, so it keeps focus (a disabled button drops focus to <body>).
+ */
 export function PrimaryButton({ children, pending = false, size = "normal" }: PrimaryButtonProps) {
   return (
     <button
       type="submit"
-      disabled={pending}
+      aria-disabled={pending || undefined}
       aria-busy={pending}
-      className={`flex cursor-pointer items-center gap-2.5 rounded-full bg-ink font-ui text-[15px] leading-[18px] font-semibold text-paper shadow-[3px_3px_0_var(--color-water)] transition-transform duration-150 hover:-translate-y-px disabled:cursor-wait motion-reduce:transition-none ${
+      onClick={(e) => {
+        if (pending) e.preventDefault();
+      }}
+      className={`flex cursor-pointer items-center gap-2.5 rounded-full bg-ink font-ui text-[15px] leading-[18px] font-semibold text-paper shadow-[3px_3px_0_var(--color-water)] transition-transform duration-150 hover:-translate-y-px aria-disabled:cursor-wait motion-reduce:transition-none ${
         size === "large" ? "px-[26px] py-[13px]" : "px-[22px] py-3"
       } ${FOCUS_RING}`}
     >
@@ -246,7 +260,9 @@ export function CardRadioGroup<T extends string>({
   const focusIndex = value ? options.indexOf(value) : 0;
 
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const current = value ? options.indexOf(value) : -1;
+    // Move from the focused card; with nothing selected that is the first card.
+    const focused = refs.current.findIndex((el) => el === e.target);
+    const current = focused >= 0 ? focused : value ? options.indexOf(value) : 0;
     let next: number;
     switch (e.key) {
       case "ArrowRight":
@@ -323,9 +339,26 @@ interface FlowFormProps {
   /** Wires the form up as the panel of the active mode tab. */
   panelId: string;
   tabId: string;
+  /** Current step. When it changes, focus moves to the new step's heading. */
+  step: number;
 }
 
-export function FlowForm({ onSubmit, children, footer, panelId, tabId }: FlowFormProps) {
+export function FlowForm({ onSubmit, children, footer, panelId, tabId, step }: FlowFormProps) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const firstRender = useRef(true);
+
+  // The control that changed the step (a route step, Back, Next) may have
+  // unmounted. Put focus somewhere meaningful so keyboard users aren't
+  // stranded on <body>, and start the new step scrolled to the top.
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    bodyRef.current?.scrollTo?.({ top: 0 });
+    bodyRef.current?.querySelector<HTMLElement>("[data-step-heading]")?.focus({ preventScroll: true });
+  }, [step]);
+
   return (
     <form
       id={panelId}
@@ -338,7 +371,9 @@ export function FlowForm({ onSubmit, children, footer, panelId, tabId }: FlowFor
       }}
       className="flex min-h-0 flex-1 flex-col"
     >
-      <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+      <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto">
+        {children}
+      </div>
       {footer}
     </form>
   );
