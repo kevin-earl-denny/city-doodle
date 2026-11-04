@@ -48,9 +48,14 @@ def compile_brief(brief: WorldBrief) -> tuple[WorldBrief, WorldSettings, list[st
     elif brief.archetype in _LANDLOCKED and brief.water_side != "none":
         brief.water_side = "none"
         warnings.append("This land has no sea, so the water side was dropped.")
-    elif brief.archetype not in _LANDLOCKED and brief.archetype != "island" and brief.water_side in (
-        "none",
-        "all_around",
+    elif (
+        brief.archetype not in _LANDLOCKED
+        and brief.archetype != "island"
+        and brief.water_side
+        in (
+            "none",
+            "all_around",
+        )
     ):
         # The model gave no usable direction; let the seed choose.
         warnings.append("No clear water direction; the seed will choose one.")

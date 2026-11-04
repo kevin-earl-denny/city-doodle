@@ -5,6 +5,7 @@ The system prompt is fully static (instructions plus the knowledge corpus in
 Never interpolate per-request data into it, or the cache breaks.
 """
 
+import html
 import json
 from pathlib import Path
 
@@ -59,17 +60,25 @@ def _load_knowledge() -> str:
 SYSTEM_PROMPT = f"{INSTRUCTIONS}\n\n{_load_knowledge()}"
 
 
+def _escape(text: str) -> str:
+    """Neutralise angle brackets so player text can't close our XML-ish wrappers."""
+    return html.escape(text.strip(), quote=False)
+
+
 def build_user_message(
     prompt: str, previous: WorldBrief | None = None, refinement: str | None = None
 ) -> str:
-    parts = [f"<player_description>\n{prompt.strip()}\n</player_description>"]
+    """Build the user turn. Everything in it is player-controlled data.
+
+    `previous` is client-echoed, so it is re-normalised by the compiler before
+    this is called. Its JSON escapes `<`, `>` and `&` as \\u escapes.
+    """
+    parts = [f"<player_description>\n{_escape(prompt)}\n</player_description>"]
     if previous is not None:
         # sort_keys keeps the serialization stable across requests.
-        parts.append(
-            "<current_brief>\n"
-            + json.dumps(previous.model_dump(mode="json"), sort_keys=True)
-            + "\n</current_brief>"
-        )
+        payload = json.dumps(previous.model_dump(mode="json"), sort_keys=True)
+        payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        parts.append(f"<current_brief>\n{payload}\n</current_brief>")
     if refinement:
-        parts.append(f"<change_request>\n{refinement.strip()}\n</change_request>")
+        parts.append(f"<change_request>\n{_escape(refinement)}\n</change_request>")
     return "\n\n".join(parts)

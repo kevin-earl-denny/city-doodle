@@ -9,9 +9,10 @@ Numeric bounds are not expressed in the schema: structured outputs don't
 enforce min/max, so the compiler clamps instead.
 """
 
+import json
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from city_api.schemas.world import GeographicSetting, WorldSettings
 
@@ -88,7 +89,9 @@ class WorldBrief(BaseModel):
     name: str = Field(description="An original, evocative city name; never a real city's name")
     name_suggestions: list[str] = Field(description="Exactly 4 alternative original names")
     founding_year: int | None = Field(description="Plausible founding year, or null")
-    founding_story: str = Field(description="2-3 sentences in a warm surveyor's voice, under 320 chars")
+    founding_story: str = Field(
+        description="2-3 sentences in a warm surveyor's voice, under 320 chars"
+    )
     feels_like: list[str] = Field(description="1-3 real cities this evokes")
     legend: LegendLines
     unsupported: list[str] = Field(
@@ -99,16 +102,50 @@ class WorldBrief(BaseModel):
 # ── API request / response ──────────────────────────────────────────────
 
 
+# Bounds for a client-echoed `previous` brief. WorldBrief itself carries no
+# length constraints because it is also the model's output schema, so the
+# limits live here. A real brief serialises to about 1.5 KB.
+MAX_PREVIOUS_BRIEF_CHARS = 6000
+MAX_PREVIOUS_STRING_CHARS = 400
+MAX_PREVIOUS_LIST_ITEMS = 6
+
+
+def _iter_strings_and_lists(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        yield value
+        for item in value:
+            yield from _iter_strings_and_lists(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_strings_and_lists(item)
+
+
 class BriefRequest(BaseModel):
     prompt: str = Field(..., min_length=3, max_length=600)
-    previous: WorldBrief | None = Field(
-        default=None, description="The brief being refined, if any"
-    )
+    previous: WorldBrief | None = Field(default=None, description="The brief being refined, if any")
     refinement: str | None = Field(
         default=None,
         max_length=300,
         description='A follow-up change request, such as "put the river on the east side"',
     )
+
+    @model_validator(mode="after")
+    def _bound_previous(self) -> "BriefRequest":
+        if self.previous is None:
+            return self
+        if self.refinement is None:
+            raise ValueError("previous brief requires a refinement")
+        data = self.previous.model_dump(mode="json")
+        if len(json.dumps(data)) > MAX_PREVIOUS_BRIEF_CHARS:
+            raise ValueError("previous brief is too large")
+        for item in _iter_strings_and_lists(data):
+            if isinstance(item, str) and len(item) > MAX_PREVIOUS_STRING_CHARS:
+                raise ValueError("previous brief has an oversized field")
+            if isinstance(item, list) and len(item) > MAX_PREVIOUS_LIST_ITEMS:
+                raise ValueError("previous brief has an oversized list")
+        return self
 
 
 class BriefResponse(BaseModel):

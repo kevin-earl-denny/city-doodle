@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from city_api.brief.compiler import compile_brief
 from city_api.brief.schema import BriefRequest, BriefResponse
@@ -11,11 +11,21 @@ from city_api.dependencies import get_current_user
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
 
+# A maximal valid request (prompt, refinement and a bounded previous brief) is under 8 KB.
+MAX_BODY_BYTES = 16_384
+
+
+async def _limit_body_size(request: Request) -> None:
+    length = request.headers.get("content-length")
+    if length is None or not length.isdigit() or int(length) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request body too large")
+
 
 @router.post("/brief", response_model=BriefResponse)
 async def create_world_brief(
     request: BriefRequest,
     user_id: UUID = Depends(get_current_user),
+    _: None = Depends(_limit_body_size),
 ) -> BriefResponse:
     """Survey a described place.
 
