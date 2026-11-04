@@ -225,3 +225,77 @@ def test_classify_protects_when_tracker_lookup_fails(repo_with_worktrees: Path) 
     later = datetime.now() + timedelta(minutes=GRACE_PERIOD_MINUTES + 5)
     statuses = classify_worktrees(repo_with_worktrees, tracker=Boom(), now=later)  # type: ignore[arg-type]
     assert statuses and not any(s.removable for s in statuses)
+
+
+# --- lookup failures are surfaced, not swallowed (CodeRabbit #472) -----------
+
+
+def test_lookup_error_is_kept_on_status_and_in_reason(repo_with_worktrees: Path) -> None:
+    class Boom:
+        def get_ticket(self, ticket_id: str) -> Ticket | None:
+            raise RuntimeError("LINEAR_API_KEY not set")
+
+    later = datetime.now() + timedelta(minutes=GRACE_PERIOD_MINUTES + 5)
+    statuses = {
+        s.branch: s
+        for s in classify_worktrees(repo_with_worktrees, tracker=Boom(), now=later)  # type: ignore[arg-type]
+    }
+    # Only worktrees that reached the Linear lookup carry the error.
+    assert statuses["CITY-1"].lookup_error == "LINEAR_API_KEY not set"
+    assert "LINEAR_API_KEY not set" in statuses["CITY-1"].reason
+    assert statuses["CITY-3"].lookup_error is None  # dirty: decided before any lookup
+    assert statuses["scratch"].lookup_error is None
+
+
+def test_unconstructible_tracker_is_reported(
+    repo_with_worktrees: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lib.vibe.git import worktree_cleanup
+
+    monkeypatch.setattr(
+        worktree_cleanup, "_load_linear_tracker", lambda root: (None, "Linear tracker unavailable")
+    )
+    later = datetime.now() + timedelta(minutes=GRACE_PERIOD_MINUTES + 5)
+    statuses = {s.branch: s for s in classify_worktrees(repo_with_worktrees, now=later)}
+    assert statuses["CITY-1"].lookup_error == "Linear tracker unavailable"
+    assert not statuses["CITY-1"].removable
+
+
+def test_worktree_containing_cwd_is_never_listed(
+    repo_with_worktrees: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lib.vibe.git.worktree_cleanup import list_feature_worktrees
+
+    wt = repo_with_worktrees.parent / "wts" / "CITY-1"
+    (wt / "sub").mkdir()
+    monkeypatch.chdir(wt / "sub")
+    branches = {w["branch"] for w in list_feature_worktrees(repo_with_worktrees)}
+    assert "CITY-1" not in branches
+    assert "CITY-2" in branches
+
+
+def test_cleanup_cli_exits_1_when_lookups_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from lib.vibe.cli import main as vibe_main
+    from lib.vibe.git.worktree_cleanup import WorktreeStatus
+
+    status = WorktreeStatus(
+        path=str(tmp_path / "CITY-1"),
+        branch="CITY-1",
+        ticket_id="CITY-1",
+        decision="protect",
+        reason="could not resolve CITY-1 in Linear — refusing to guess: LINEAR_API_KEY not set",
+        lookup_error="LINEAR_API_KEY not set",
+    )
+    monkeypatch.setattr("lib.vibe.git.worktrees.get_primary_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "lib.vibe.git.worktree_cleanup.classify_worktrees", lambda root, **kw: [status]
+    )
+    for args in (["cleanup", "--dry-run"], ["cleanup", "--force"]):
+        result = CliRunner().invoke(vibe_main.main, args)
+        assert result.exit_code == 1, result.output
+        assert "LINEAR_API_KEY not set" in result.output
+        assert "Nothing to clean up" not in result.output

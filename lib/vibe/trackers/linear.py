@@ -1018,12 +1018,11 @@ class LinearTracker(TrackerBase):
         if filter_obj:
             variables["filter"] = filter_obj
 
-        try:
-            result = self._execute_query(query, variables)
-            nodes = result.get("data", {}).get("projects", {}).get("nodes", [])
-            return [self._parse_project(p) for p in nodes]
-        except (requests.RequestException, RuntimeError):
-            return []
+        # Errors propagate: an empty list here would make `--project X` resolve
+        # to nothing and silently drop the filter.
+        result = self._execute_query(query, variables)
+        nodes = ((result.get("data") or {}).get("projects") or {}).get("nodes", [])
+        return [self._parse_project(p) for p in nodes]
 
     def get_project(self, project_id: str) -> Project | None:
         """Get a project by ID or name.
@@ -1047,11 +1046,15 @@ class LinearTracker(TrackerBase):
         """
         try:
             result = self._execute_query(query, {"id": project_id})
-            project = result.get("data", {}).get("project")
+        except RuntimeError as e:
+            # A name (not a UUID) comes back as "Entity not found" -> try by name.
+            # Any other failure (auth, outage) propagates.
+            if "entity not found" not in str(e).lower():
+                raise
+        else:
+            project = (result.get("data") or {}).get("project")
             if project:
                 return self._parse_project(project)
-        except (requests.RequestException, RuntimeError):
-            pass
 
         # Try by name
         projects = self.list_projects()
@@ -1112,13 +1115,17 @@ class LinearTracker(TrackerBase):
             raw=project,
         )
 
-    def _get_project_id(self, project_name: str) -> str | None:
-        """Resolve project name to ID."""
+    def _get_project_id(self, project_name: str) -> str:
+        """Resolve project name to ID.
+
+        Raises ``RuntimeError`` when no project matches: callers (list/create/
+        update) must not silently drop a project filter or assignment.
+        """
         projects = self.list_projects()
         for p in projects:
             if p.name.lower() == project_name.lower():
                 return p.id
-        return None
+        raise RuntimeError(f"Project not found: {project_name}")
 
     # -------------------------------------------------------------------------
     # User Management (for assignee support)

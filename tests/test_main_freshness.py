@@ -185,6 +185,77 @@ class TestNeverBlocks:
         ast.parse(source, feature_version=(3, 9))
 
 
+class TestSessionBranch:
+    """The advice depends on the session's branch, not the primary checkout's."""
+
+    def test_worktree_session_on_stale_main_gets_worktree_advice(
+        self,
+        clone: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from scripts.check_main_freshness import main
+
+        tree = tmp_path / "wt"
+        git(clone, "worktree", "add", "-b", "CITY-641", str(tree))
+        advance_upstream(clone, 2)  # primary checkout stays on `main`
+        monkeypatch.chdir(tree)
+        assert main(["--no-fetch"]) == 0
+        out = capsys.readouterr().out
+        assert "you are on CITY-641" in out
+        assert "pull --ff-only" not in out
+
+    def test_names_the_session_branch_when_primary_is_elsewhere(
+        self,
+        clone: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from scripts.check_main_freshness import main
+
+        git(clone, "checkout", "-b", "other-branch")
+        tree = tmp_path / "wt"
+        git(clone, "worktree", "add", "-b", "CITY-641", str(tree))
+        advance_upstream(clone, 1)
+        monkeypatch.chdir(tree)
+        assert main(["--no-fetch"]) == 0
+        out = capsys.readouterr().out
+        assert "you are on CITY-641" in out
+        assert "other-branch" not in out
+
+
+class TestDiagnostics:
+    def test_unexpected_error_is_reported_on_stderr_and_exits_zero(
+        self,
+        clone: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import scripts.check_main_freshness as mod
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise ValueError("kaboom")
+
+        monkeypatch.setattr(mod, "check", boom)
+        monkeypatch.chdir(clone)
+        assert mod.main(["--no-fetch"]) == 0
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "check skipped (ValueError: kaboom)" in captured.err
+
+    def test_silent_outside_a_repository(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from scripts.check_main_freshness import main
+
+        monkeypatch.chdir(tmp_path)
+        assert main(["--no-fetch"]) == 0
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
+
+
 class TestHookWiring:
     """A correct script that nothing invokes is the failure this ticket exists to fix."""
 

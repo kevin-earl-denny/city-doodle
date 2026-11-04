@@ -165,3 +165,39 @@ def test_cli_genuinely_empty_list_exits_0(monkeypatch: pytest.MonkeyPatch) -> No
     result = CliRunner().invoke(ticket_cli.main, ["list"])
     assert result.exit_code == 0
     assert "No tickets found" in result.output
+
+
+# --- project resolution never silently drops a filter (CodeRabbit #472) ----------
+
+
+def test_unknown_project_raises_instead_of_dropping_filter() -> None:
+    tracker = LinearTracker(api_key="k", team_id=TEAM)
+    with patch.object(tracker, "list_projects", return_value=[]):
+        with pytest.raises(RuntimeError, match="Project not found: Roadmap"):
+            tracker.list_tickets(project="Roadmap")
+
+
+def test_list_projects_propagates_api_errors() -> None:
+    tracker = LinearTracker(api_key="k", team_id=TEAM)
+    with patch.object(tracker, "_execute_query", side_effect=RuntimeError("Linear API error")):
+        with pytest.raises(RuntimeError, match="Linear API error"):
+            tracker.list_projects()
+
+
+def test_get_project_falls_back_to_name_only_on_not_found() -> None:
+    from lib.vibe.trackers.base import Project
+
+    tracker = LinearTracker(api_key="k", team_id=TEAM)
+    proj = Project(id="p1", name="Roadmap", description="", state="started", url="", raw={})
+    with (
+        patch.object(
+            tracker, "_execute_query", side_effect=RuntimeError("Entity not found: Project")
+        ),
+        patch.object(tracker, "list_projects", return_value=[proj]),
+    ):
+        assert tracker.get_project("Roadmap") == proj
+    with patch.object(
+        tracker, "_execute_query", side_effect=RuntimeError("Linear rejected LINEAR_API_KEY")
+    ):
+        with pytest.raises(RuntimeError, match="LINEAR_API_KEY"):
+            tracker.get_project("Roadmap")

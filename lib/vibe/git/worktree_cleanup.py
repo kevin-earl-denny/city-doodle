@@ -70,6 +70,9 @@ class WorktreeStatus:
     ticket_id: str | None
     decision: str  # "remove" or "protect"
     reason: str
+    # Set when the Linear lookup itself failed (missing/invalid key, outage).
+    # The worktree is still protected, but callers must not report a clean run.
+    lookup_error: str | None = None
 
     @property
     def removable(self) -> bool:
@@ -224,15 +227,26 @@ def list_feature_worktrees(repo_root: Path) -> list[dict[str, str]]:
         worktrees.append(current)
 
     main_path = str(repo_root.resolve())
+    cwd = Path.cwd().resolve()
+
+    def _contains_cwd(path: str) -> bool:
+        # Never offer up the worktree the caller is standing in (e.g. `bin/vibe do`
+        # run from a finished worktree): removing it pulls the cwd out from under us.
+        wt = Path(path).resolve()
+        return cwd == wt or wt in cwd.parents
+
     return [
         wt
         for wt in worktrees
-        if wt.get("path") and wt.get("branch") and str(Path(wt["path"]).resolve()) != main_path
+        if wt.get("path")
+        and wt.get("branch")
+        and str(Path(wt["path"]).resolve()) != main_path
+        and not _contains_cwd(wt["path"])
     ]
 
 
-def _load_linear_tracker(repo_root: Path) -> TrackerBase | None:
-    """Best-effort LinearTracker, or None when it can't be constructed.
+def _load_linear_tracker(repo_root: Path) -> tuple[TrackerBase | None, str | None]:
+    """Best-effort ``(LinearTracker, None)``, or ``(None, error)`` if it can't be built.
 
     Loads ``.env`` / ``.env.local`` from the *primary* repo root first: this
     code routinely runs from a linked worktree, which has no env file of its
@@ -244,10 +258,10 @@ def _load_linear_tracker(repo_root: Path) -> TrackerBase | None:
         from lib.vibe.trackers.linear import LinearTracker
 
         load_env_files(project_root=repo_root)
-        return LinearTracker()
-    except Exception:
-        # No tracker available -> classify_worktrees protects everything.
-        return None
+        return LinearTracker(), None
+    except Exception as e:
+        # No tracker -> classify_worktrees protects everything, and reports why.
+        return None, f"Linear tracker unavailable: {e}"
 
 
 def classify_worktrees(
@@ -261,14 +275,17 @@ def classify_worktrees(
 
     Cheap local guards (ticket id, uncommitted changes, grace period) are
     evaluated first; only worktrees that survive them incur a Linear lookup.
-    Lookups run concurrently. Any lookup failure resolves to ``protect``.
+    Lookups run concurrently. Any lookup failure resolves to ``protect`` and is
+    recorded on ``WorktreeStatus.lookup_error`` (and in the reason) so callers
+    can fail loudly instead of reporting "nothing to clean up".
     """
     worktrees = list_feature_worktrees(repo_root)
     if not worktrees:
         return []
 
+    tracker_error: str | None = None
     if tracker is None:
-        tracker = _load_linear_tracker(repo_root)
+        tracker, tracker_error = _load_linear_tracker(repo_root)
 
     def _classify(wt: dict[str, str]) -> WorktreeStatus:
         path = wt["path"]
@@ -279,17 +296,20 @@ def classify_worktrees(
         age = _worktree_age_minutes(path, repo_root, now=now)
 
         ticket: Ticket | None = None
+        lookup_error: str | None = None
         cheap_guard_decides = (
             not ticket_id or has_changes or age is None or age < GRACE_PERIOD_MINUTES
         )
-        if not cheap_guard_decides and tracker is not None and ticket_id:
-            try:
-                ticket = tracker.get_ticket(ticket_id)
-            except Exception:
-                # Unreachable tracker -> ticket stays None -> protect. The
-                # conservative (non-destructive) outcome is surfaced via the
-                # decision reason; nothing is silently swallowed.
-                ticket = None
+        if not cheap_guard_decides and ticket_id:
+            if tracker is None:
+                lookup_error = tracker_error or "no Linear tracker available"
+            else:
+                try:
+                    ticket = tracker.get_ticket(ticket_id)
+                except Exception as e:
+                    # Unreachable tracker -> ticket stays None -> protect, but
+                    # keep the cause so the caller can surface it.
+                    lookup_error = str(e) or type(e).__name__
 
         decision, reason = decide_worktree_fate(
             ticket_id=ticket_id,
@@ -297,12 +317,15 @@ def classify_worktrees(
             age_minutes=age,
             ticket=ticket,
         )
+        if lookup_error:
+            reason = f"{reason}: {lookup_error}"
         return WorktreeStatus(
             path=path,
             branch=branch,
             ticket_id=ticket_id,
             decision=decision,
             reason=reason,
+            lookup_error=lookup_error,
         )
 
     workers = max(1, min(max_workers, len(worktrees)))
@@ -323,6 +346,7 @@ def remove_worktree_and_branch(path: str, branch: str, repo_root: Path) -> tuple
             check=True,
             capture_output=True,
             text=True,
+            cwd=repo_root,
         )
     except subprocess.CalledProcessError as e:
         return False, f"git worktree remove failed: {(e.stderr or '').strip()}"

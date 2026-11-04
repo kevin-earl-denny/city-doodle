@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from pathlib import Path
 
 FETCH_TIMEOUT_SECONDS = 10
@@ -46,6 +47,11 @@ def git(repo: Path, *args: str, timeout: int | None = None) -> str:
     return result.stdout.strip()
 
 
+def skipped(reason: str) -> None:
+    """One-line diagnostic on stderr: a broken check must not look like a current one."""
+    print(f"check_main_freshness: check skipped ({reason})", file=sys.stderr)
+
+
 def primary_repo_root(start: Path) -> Path | None:
     """Resolve the main checkout, even when called from inside a worktree.
 
@@ -55,7 +61,14 @@ def primary_repo_root(start: Path) -> Path | None:
     """
     try:
         common = Path(git(start, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-    except GIT_ERRORS:
+    except subprocess.CalledProcessError as exc:
+        # Outside a repository is a legitimate state: stay silent. Anything else
+        # (e.g. git < 2.31 without --path-format) means the check can't run.
+        if "not a git repository" not in (exc.stderr or "").lower():
+            skipped(f"git rev-parse failed: {(exc.stderr or '').strip() or exc}")
+        return None
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        skipped(f"git unavailable: {exc}")
         return None
     return common.parent if common.name == ".git" else None
 
@@ -156,8 +169,13 @@ def advise(behind: int, ahead: int, branch: str, main: str, repo: Path) -> str |
     return None
 
 
-def check(repo: Path, do_fetch: bool = True) -> str | None:
-    """Full check against `repo`. Returns the message to print, or None."""
+def check(repo: Path, do_fetch: bool = True, session_dir: Path | None = None) -> str | None:
+    """Full check against `repo`. Returns the message to print, or None.
+
+    `repo` is the primary checkout (where local `main` lives); `session_dir` is where
+    the session actually is — in a linked worktree its branch differs from the
+    primary checkout's, and the advice depends on the session's branch.
+    """
     main = default_branch(repo)
     if do_fetch and not fetch(repo, main):
         return None  # Offline or no remote. Not the session's problem to solve.
@@ -167,7 +185,7 @@ def check(repo: Path, do_fetch: bool = True) -> str | None:
         return None
     behind, ahead = counts
 
-    return advise(behind, ahead, current_branch(repo), main, repo)
+    return advise(behind, ahead, current_branch(session_dir or repo), main, repo)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -176,11 +194,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        repo = primary_repo_root(Path.cwd())
+        session_dir = Path.cwd()
+        repo = primary_repo_root(session_dir)
         if repo is None:
             return 0
-        message = check(repo, do_fetch=not args.no_fetch)
-    except Exception:  # noqa: BLE001 - a SessionStart hook must never fail the session
+        message = check(repo, do_fetch=not args.no_fetch, session_dir=session_dir)
+    except Exception as exc:  # noqa: BLE001 - a SessionStart hook must never fail the session
+        skipped(f"{type(exc).__name__}: {exc}")
         return 0
     if message:
         print(message)

@@ -244,6 +244,15 @@ def _auto_cleanup_worktrees(repo_root: Path) -> None:
         click.echo(f"  (skipped worktree auto-cleanup: {e})", err=True)
         return
 
+    failed = [s for s in statuses if s.lookup_error]
+    if failed:
+        # Don't block new work, but don't pretend the sweep was complete either.
+        click.echo(
+            f"  WARN auto-cleanup could not check {len(failed)} worktree(s) in Linear "
+            f"(kept them): {failed[0].lookup_error}",
+            err=True,
+        )
+
     removable = [s for s in statuses if s.removable]
     if not removable:
         return
@@ -488,6 +497,18 @@ def cleanup(dry_run: bool, force: bool) -> None:
 
     removable = [s for s in statuses if s.removable]
     protected = [s for s in statuses if not s.removable]
+    failed = [s for s in statuses if s.lookup_error]
+
+    def _exit_if_lookups_failed() -> None:
+        # Kept worktrees whose ticket couldn't be checked make the run incomplete:
+        # say so and exit non-zero rather than reporting a clean "nothing to do".
+        if failed:
+            click.echo(
+                f"\nError: could not check {len(failed)} worktree(s) in Linear, so they "
+                f"were kept: {failed[0].lookup_error}",
+                err=True,
+            )
+            sys.exit(1)
 
     if removable:
         click.echo(f"\nComplete (safe to remove): {len(removable)}")
@@ -499,11 +520,13 @@ def cleanup(dry_run: bool, force: bool) -> None:
             click.echo(f"  {s.branch} — {s.reason}")
 
     if not removable:
+        _exit_if_lookups_failed()
         click.echo("\nNo completed worktrees found. Nothing to clean up.")
         return
 
     if dry_run:
         click.echo(f"\nDry run: would remove {len(removable)} worktree(s).")
+        _exit_if_lookups_failed()
         return
 
     if not force and not click.confirm(
@@ -529,6 +552,7 @@ def cleanup(dry_run: bool, force: bool) -> None:
     # Just show a summary, not full results
     passed = sum(1 for r in doctor_results if r.status.value == "✓")
     click.echo(f"Doctor: {passed}/{len(doctor_results)} checks passed.")
+    _exit_if_lookups_failed()
 
 
 def _get_first_commit_headline(main_branch: str = "main") -> str | None:
