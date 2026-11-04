@@ -1019,6 +1019,39 @@ class TestBayGeneration:
         assert not _deep_in_bay(mouth_beach, refs)
         assert not _deep_in_bay(open_coast_beach, refs)
 
+    def test_wide_bay_keeps_beaches_at_mouth_ends(self):
+        """Beaches beside either end of a wide mouth stay (CITY-691 review).
+
+        A cove wider than the closing disk but shallower than it is open
+        coast in its middle; only its back corners close into one C-shaped
+        bay whose mouth is a long arc (entrance far wider than depth).  Depth
+        is measured from the nearest mouth cell, so a beach at an end of that
+        arc is at the mouth even though it is far from the arc's centre.
+        """
+        import numpy as np
+        from shapely.geometry import box
+
+        from city_worker.terrain.water import _bay_refs, _deep_in_bay
+
+        hf = np.full((128, 128), 0.6)
+        hf[:, 96:] = 0.2  # open sea on the right
+        hf[46:82, 84:96] = 0.2  # cove: 36 cells wide, 12 deep
+        bays = extract_bays(hf, 0.35, 0, 0, 256.0)
+        assert len(bays) == 1
+        props = bays[0].properties
+        assert props["entrance_width"] > 2 * props["depth"]  # wider than deep
+        refs = _bay_refs(bays)
+
+        cell = 2.0
+        # Top shore beside the mouth's end: ~1 unit from a mouth cell but
+        # ~37 units from the mouth's centre (dropped by a centre-based rule)
+        mouth_end_beach = box(90 * cell, 45 * cell, 96 * cell, 47 * cell)
+        # Top back corner of the bay: deep inside, away from the mouth
+        back_corner_beach = box(84 * cell, 45 * cell, 87 * cell, 47 * cell)
+
+        assert not _deep_in_bay(mouth_end_beach, refs)
+        assert _deep_in_bay(back_corner_beach, refs)
+
     def test_bay_generation_deterministic(self):
         """Same terrain produces identical bays."""
         hf = self._inlet_heightfield()

@@ -8,7 +8,7 @@ import shapely
 from numpy.typing import NDArray
 from scipy.ndimage import binary_dilation, label
 from shapely.errors import GEOSException, TopologicalError
-from shapely.geometry import LineString, MultiPolygon, Point, Polygon, shape
+from shapely.geometry import LineString, MultiPoint, MultiPolygon, Polygon, shape
 
 from city_worker.terrain.types import DEFAULT_LAKE_TYPE, LakeType, TerrainFeature
 
@@ -1014,34 +1014,35 @@ def _split_beach_region(
 
 # A beach lines a bay when at least this share of its polygon (its water
 # fringe) lies in the bay; it is dropped when it also sits farther than
-# BAY_BEACH_INNER_FRACTION of the bay's depth from the mouth (CITY-691).
+# BAY_BEACH_INNER_FRACTION of the bay's depth from the nearest mouth cell
+# (CITY-691), the same reference the bay's depth is measured from.
 BAY_BEACH_MIN_OVERLAP = 0.25
 BAY_BEACH_INNER_FRACTION = 0.75
 
 
 def _bay_refs(
     bay_features: list[TerrainFeature] | None,
-) -> list[tuple[Polygon, Point, float]]:
-    """(polygon, mouth point, depth) for each bay with usable geometry."""
-    refs: list[tuple[Polygon, Point, float]] = []
+) -> list[tuple[Polygon, MultiPoint, float]]:
+    """(polygon, mouth cell points, depth) for each bay with usable geometry."""
+    refs: list[tuple[Polygon, MultiPoint, float]] = []
     for f in bay_features or []:
         mouth = f.properties.get("mouth")
         depth = f.properties.get("depth", 0.0)
         if not mouth or depth <= 0:
             continue
-        refs.append((shape(f.geometry), Point(mouth), float(depth)))
+        refs.append((shape(f.geometry), MultiPoint(mouth), float(depth)))
     return refs
 
 
-def _deep_in_bay(beach: Polygon, bay_refs: list[tuple[Polygon, Point, float]]) -> bool:
-    """True if *beach* lines a bay's shore far from that bay's mouth."""
+def _deep_in_bay(beach: Polygon, bay_refs: list[tuple[Polygon, MultiPoint, float]]) -> bool:
+    """True if *beach* lines a bay's shore far from that bay's mouth.
+
+    Geometry errors propagate: the job should fail loudly rather than
+    return terrain with an unchecked harbor beach.
+    """
     centroid = beach.centroid
     for bay, mouth, depth in bay_refs:
-        try:
-            overlap = beach.intersection(bay).area
-        except (GEOSException, TopologicalError) as e:
-            logger.warning("Beach-bay intersection check failed: %s", e)
-            continue
+        overlap = beach.intersection(bay).area
         if overlap < beach.area * BAY_BEACH_MIN_OVERLAP:
             continue
         if centroid.distance(mouth) > BAY_BEACH_INNER_FRACTION * depth:
