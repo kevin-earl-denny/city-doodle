@@ -15,8 +15,8 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-from city_api.database import Base  # noqa: E402
 import city_api.models  # noqa: E402, F401  -- import all models so Alembic metadata is complete
+from city_api.database import Base  # noqa: E402
 
 target_metadata = Base.metadata
 

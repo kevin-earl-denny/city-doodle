@@ -7,11 +7,11 @@ capacity requirements and available space.
 import math
 import random
 from dataclasses import dataclass
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from city_worker.stadium.types import (
-    Point,
     ParkingLotResult,
+    Point,
     StadiumPlacement,
 )
 

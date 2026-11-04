@@ -6,15 +6,15 @@ from uuid import uuid4
 import pytest
 
 from city_worker.stadium.grid_impact import (
-    StreetGridImpactCalculator,
-    compute_street_orientation,
-    calculate_impact_radius,
-    distance,
     RoadSegment,
+    StreetGridImpactCalculator,
+    calculate_impact_radius,
+    compute_street_orientation,
+    distance,
 )
 from city_worker.stadium.parking import (
-    ParkingLotGenerator,
     ParkingConfig,
+    ParkingLotGenerator,
     generate_parking_lots,
 )
 from city_worker.stadium.types import (

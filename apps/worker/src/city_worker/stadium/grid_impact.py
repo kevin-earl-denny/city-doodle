@@ -12,8 +12,8 @@ from uuid import UUID
 from city_worker.stadium.types import (
     Point,
     StadiumPlacement,
-    StreetOrientationResult,
     StreetGridImpactResult,
+    StreetOrientationResult,
 )
 
 

@@ -7,8 +7,8 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from city_api.models.district import District as DistrictModel
 from city_api.models.district import DISTRICT_TYPE_DEFAULTS
+from city_api.models.district import District as DistrictModel
 from city_api.repositories import road_network as road_network_repo
 from city_api.schemas import District, DistrictCreate, DistrictUpdate
 

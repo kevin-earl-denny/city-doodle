@@ -1,12 +1,10 @@
 """Tests for health check endpoints and error handling."""
 
 import pytest
-from starlette.testclient import TestClient
-
-from city_api.main import _add_cors_headers, app
-
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
+from city_api.main import _add_cors_headers
 
 
 @pytest.mark.asyncio

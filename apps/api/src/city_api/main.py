@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from sqlalchemy.exc import DBAPIError, DataError, IntegrityError, OperationalError
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError, OperationalError
 
 from city_api.config import settings
 from city_api.observability import configure_axiom_logging, redact_sensitive

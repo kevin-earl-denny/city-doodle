@@ -2,12 +2,10 @@
 
 from uuid import uuid4
 
-import pytest
 from city_worker.growth import GrowthChangelog, GrowthConfig
 from city_worker.growth.simulator import (
-    GrowthSimulator,
     TRANSIT_ACCESS_GROWTH_MULTIPLIER,
-    TRANSIT_EXPANSION_BIAS,
+    GrowthSimulator,
     _point_in_ring,
 )
 from city_worker.growth.types import ChangeEntry

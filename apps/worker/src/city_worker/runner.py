@@ -175,7 +175,7 @@ class JobRunner:
                         timeout=settings.listen_timeout_seconds,
                     )
                     logger.debug("Woke up via NOTIFY")
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.debug(
                         "Fallback poll (no notification in %.0fs)", settings.listen_timeout_seconds
                     )
@@ -608,7 +608,7 @@ class JobRunner:
         session = await get_session()
         try:
             async with session.begin():
-                values = f"terrain_status = :status"
+                values = "terrain_status = :status"
                 if error is not None:
                     values += ", terrain_error = :error"
                 elif status != "failed":
