@@ -44,8 +44,7 @@ describe("SubwayStationLayer", () => {
       expect(stationsContainer.children.length).toBe(2);
     });
 
-    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
-    it.skip("should update existing stations", () => {
+    it("should update existing stations", () => {
       const stations: SubwayStationData[] = [
         { id: "1", name: "Central", position: { x: 100, y: 100 }, isTerminus: false },
       ];
@@ -63,8 +62,7 @@ describe("SubwayStationLayer", () => {
       expect(layer.getContainer().children.length).toBe(3);
     });
 
-    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
-    it.skip("should remove stations that are no longer present", () => {
+    it("should remove stations that are no longer present", () => {
       const stations: SubwayStationData[] = [
         { id: "1", name: "Central", position: { x: 100, y: 100 }, isTerminus: false },
         { id: "2", name: "North", position: { x: 200, y: 200 }, isTerminus: false },
@@ -89,8 +87,7 @@ describe("SubwayStationLayer", () => {
   });
 
   describe("setPreview", () => {
-    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
-    it.skip("should show preview when data is provided", () => {
+    it("should show preview when data is provided", () => {
       const preview: SubwayStationPreviewData = {
         position: { x: 100, y: 100 },
         isValid: true,
@@ -103,8 +100,7 @@ describe("SubwayStationLayer", () => {
       expect(previewContainer.children.length).toBeGreaterThan(0);
     });
 
-    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
-    it.skip("should clear preview when null is provided", () => {
+    it("should clear preview when null is provided", () => {
       const preview: SubwayStationPreviewData = {
         position: { x: 100, y: 100 },
         isValid: true,
@@ -120,8 +116,7 @@ describe("SubwayStationLayer", () => {
       }
     });
 
-    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
-    it.skip("should show warning message for invalid placement", () => {
+    it("should show warning message for invalid placement", () => {
       const preview: SubwayStationPreviewData = {
         position: { x: 100, y: 100 },
         isValid: false,
