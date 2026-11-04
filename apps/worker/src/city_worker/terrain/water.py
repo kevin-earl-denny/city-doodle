@@ -981,18 +981,11 @@ def _split_beach_region(
     if len(region_cells) <= max_segment_cells:
         return [region_cells]
 
-    # Determine primary axis (direction the coastline runs)
-    cells_array = np.array(region_cells)
-    i_range = cells_array[:, 0].max() - cells_array[:, 0].min()
-    j_range = cells_array[:, 1].max() - cells_array[:, 1].min()
-
-    # Sort cells along the longer axis (coastal direction)
-    if j_range >= i_range:
-        sort_idx = np.argsort(cells_array[:, 1])
-    else:
-        sort_idx = np.argsort(cells_array[:, 0])
-
-    sorted_cells = [region_cells[idx] for idx in sort_idx]
+    # Order cells by walking distance along the beach from one end, so each
+    # chunk is a band cut across the shore. Sorting by a single axis (the old
+    # approach) put opposite shores of an island or peninsula into the same
+    # chunk, which rendered as bars across land and water (CITY-699).
+    sorted_cells = _order_along_region(region_cells)
 
     # Split into segments with gaps
     rng = np.random.default_rng(seed)
@@ -1002,14 +995,71 @@ def _split_beach_region(
     while pos < len(sorted_cells):
         # Vary segment length for natural appearance
         seg_len = int(rng.integers(max_segment_cells // 2, max_segment_cells + 1))
-        segment = sorted_cells[pos : pos + seg_len]
-        if len(segment) >= min_segment_cells:
-            segments.append(segment)
+        chunk = sorted_cells[pos : pos + seg_len]
+        # A chunk of a ring-shaped region can still hold two arcs at the same
+        # walking distance; emit each connected piece as its own segment.
+        for piece in _connected_pieces(chunk):
+            if len(piece) >= min_segment_cells:
+                segments.append(piece)
         # Vary gap size too
         gap = int(rng.integers(max(1, gap_cells // 2), gap_cells + 1))
         pos += seg_len + gap
 
     return segments if segments else [region_cells]
+
+
+_NEIGHBOURS_4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
+
+
+def _bfs_distances(
+    cells: set[tuple[int, int]], start: tuple[int, int]
+) -> dict[tuple[int, int], int]:
+    """4-connected walking distance from *start* to every reachable cell."""
+    dist = {start: 0}
+    frontier = [start]
+    while frontier:
+        nxt = []
+        for i, j in frontier:
+            d = dist[(i, j)] + 1
+            for di, dj in _NEIGHBOURS_4:
+                n = (i + di, j + dj)
+                if n in cells and n not in dist:
+                    dist[n] = d
+                    nxt.append(n)
+        frontier = nxt
+    return dist
+
+
+def _order_along_region(region_cells: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Order a 4-connected region's cells by walking distance from one end.
+
+    A double BFS sweep finds a cell at the far end of the region (for a
+    beach strip, one of its tips); cells are then sorted by distance from
+    it, with row/column as a deterministic tie-break.
+    """
+    cells = set(region_cells)
+    first = min(region_cells)
+    from_first = _bfs_distances(cells, first)
+    end = max(from_first, key=lambda c: (from_first[c], c))
+    from_end = _bfs_distances(cells, end)
+    return sorted(region_cells, key=lambda c: (from_end.get(c, len(cells)), c))
+
+
+def _connected_pieces(cells: list[tuple[int, int]]) -> list[list[tuple[int, int]]]:
+    """Split *cells* into 8-connected pieces (diagonal contact counts, as in
+    _cells_to_polygon)."""
+    if not cells:
+        return []
+    arr = np.asarray(cells)
+    origin = arr.min(axis=0)
+    local = arr - origin + 1
+    mask = np.zeros(tuple(local.max(axis=0) + 2), dtype=bool)
+    mask[local[:, 0], local[:, 1]] = True
+    labeled, n = label(mask, structure=np.ones((3, 3), dtype=np.int32))
+    if n == 1:
+        return [cells]
+    labels = labeled[local[:, 0], local[:, 1]]
+    return [[c for c, lab in zip(cells, labels) if lab == k] for k in range(1, n + 1)]
 
 
 def extract_beaches(
