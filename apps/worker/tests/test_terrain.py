@@ -24,6 +24,7 @@ from city_worker.terrain.noise import SeededNoise, apply_erosion, generate_heigh
 from city_worker.terrain.types import TileCoord
 from city_worker.terrain.water import (
     _cells_to_polygon,
+    _split_beach_region,
     calculate_flow_accumulation,
     extract_beaches,
     extract_coastlines,
@@ -873,6 +874,100 @@ class TestBeachGeneration:
                 f"Lake beach coverage {total_beach_perim:.0f} exceeds 50% of "
                 f"lake perimeter {lake_perim:.0f}"
             )
+
+
+class TestBeachSegmentSplitting:
+    """CITY-699: beach segments must each be one contiguous stretch of shore."""
+
+    @staticmethod
+    def _n_pieces(cells):
+        import numpy as np
+        from scipy.ndimage import label
+
+        arr = np.asarray(cells)
+        mask = np.zeros(tuple(arr.max(axis=0) + 2), dtype=bool)
+        mask[arr[:, 0], arr[:, 1]] = True
+        return label(mask, structure=np.ones((3, 3)))[1]
+
+    def test_ring_around_island_splits_into_connected_segments(self):
+        """A beach ring around an island must not pair opposite shores in one
+        segment (the old single-axis sort did, rendering bars across land)."""
+        ring = [
+            (i, j) for i in range(4, 28) for j in range(4, 28) if not (6 <= i < 26 and 6 <= j < 26)
+        ]
+
+        segments = _split_beach_region(
+            ring, max_segment_cells=20, gap_cells=4, min_segment_cells=3, seed=7
+        )
+
+        assert len(segments) > 4
+        for seg in segments:
+            assert self._n_pieces(seg) == 1, f"segment spans {self._n_pieces(seg)} pieces"
+            assert len(seg) <= 20
+
+    def test_straight_strip_splits_into_bands_in_order(self):
+        """On a straight strip, segments are consecutive bands along it."""
+        strip = [(i, j) for i in range(10, 12) for j in range(0, 60)]
+
+        segments = _split_beach_region(
+            strip, max_segment_cells=20, gap_cells=4, min_segment_cells=3, seed=1
+        )
+
+        assert len(segments) >= 3
+        spans = [(min(j for _, j in s), max(j for _, j in s)) for s in segments]
+        for seg in segments:
+            assert self._n_pieces(seg) == 1
+        # The walk may start from either tip; bands must be monotone along it
+        if spans[0][0] > spans[-1][0]:
+            spans.reverse()
+        assert all(a[1] < b[0] for a, b in zip(spans, spans[1:])), spans
+
+    @pytest.mark.parametrize("seed", [42, 12345])
+    def test_coastal_beaches_hug_the_shoreline(self, seed):
+        """Generated coastal beaches are valid strips along the land/water
+        boundary, not bars across land or open water."""
+        import numpy as np
+        import shapely
+        from scipy.ndimage import distance_transform_edt
+        from shapely.geometry import shape
+
+        from city_worker.terrain import apply_seed_variation
+
+        kw = apply_seed_variation("coastal", seed=seed)
+        kw.update(world_seed=seed, geographic_setting="coastal")
+        config = TerrainConfig(**kw)
+        result = TerrainGenerator(config).generate_3x3(1, 1)
+
+        near = total = 0
+        n_beaches = 0
+        for tile in result.all_tiles():
+            hf = np.asarray(tile.heightfield)
+            res = hf.shape[0]
+            cell = config.tile_size / res
+            water = hf < config.water_level
+            shore = np.zeros_like(water)
+            shore[:-1] |= water[:-1] != water[1:]
+            shore[1:] |= water[:-1] != water[1:]
+            shore[:, :-1] |= water[:, :-1] != water[:, 1:]
+            shore[:, 1:] |= water[:, :-1] != water[:, 1:]
+            dist = distance_transform_edt(~shore)
+            jj, ii = np.meshgrid(np.arange(res), np.arange(res))
+            xs = tile.tx * config.tile_size + (jj + 0.5) * cell
+            ys = tile.ty * config.tile_size + (ii + 0.5) * cell
+            for f in tile.features:
+                if f.type != "beach":
+                    continue
+                n_beaches += 1
+                g = shape(f.geometry)
+                assert g.is_valid
+                # Mean strip thickness (area / half-perimeter) stays a few cells
+                assert 2 * g.area / g.length <= 3 * cell
+                inside = shapely.contains_xy(g, xs, ys)
+                total += int(inside.sum())
+                near += int((inside & (dist <= 3)).sum())
+
+        assert n_beaches > 20
+        assert near / total >= 0.97, f"only {near / total:.1%} of beach within 3 cells of shore"
 
 
 class TestBayGeneration:
