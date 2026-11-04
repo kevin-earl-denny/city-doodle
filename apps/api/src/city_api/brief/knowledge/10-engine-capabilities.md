@@ -13,7 +13,7 @@ Read this before filling a World Brief. It describes what the generator can actu
 | id | What the generator makes | Water it guarantees |
 |---|---|---|
 | `coastal` | Open coast along one side of the map, beaches, small bays, sometimes barrier islands | Ocean on one side |
-| `bay_harbor` | Ocean on one side, with a large sheltered bay carved into the land near the centre | Bay plus ocean beyond |
+| `bay_harbor` | Ocean on one side opening into a large sheltered harbor near the centre; coves and inlets are marked only where land truly encloses the water | Bay plus ocean beyond |
 | `river_valley` | One river channel through the centre, with dry valley walls on both sides. No sea | One river |
 | `lakefront` | A large lake filling one side of the map, beaches on its shore, possibly smaller lakes | Big lake on one side |
 | `inland` (shown to users as **Plains**) | Dry rolling land with no sea, no lakes, and currently no rivers | None |
