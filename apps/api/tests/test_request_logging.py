@@ -6,10 +6,11 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from city_api import observability
-from city_api.request_logging import RequestLoggingMiddleware
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+
+from city_api import observability
+from city_api.request_logging import RequestLoggingMiddleware
 
 
 class _Capture(logging.Handler):
@@ -277,8 +278,9 @@ async def test_duplicate_email_never_ships(shipped):
 @pytest.mark.asyncio
 async def test_session_token_in_sql_parameters_never_ships(shipped):
     """Even without hide_parameters, the parameters and DETAIL are scrubbed centrally."""
-    from city_api.main import dbapi_error_handler
     from sqlalchemy.exc import DBAPIError
+
+    from city_api.main import dbapi_error_handler
 
     orig = Exception(f"connection reset\nDETAIL:  Key (token)=({SESSION_TOKEN}) is not present.")
     exc = DBAPIError.instance(
@@ -376,8 +378,9 @@ def _asyncpg_uuid_bind_error():
 @pytest.mark.asyncio
 async def test_asyncpg_uuid_bind_value_never_ships(shipped):
     """CITY-686: the chained `invalid UUID '<value>'` line is redacted from tracebacks."""
-    from city_api.main import dbapi_error_handler
     from sqlalchemy.exc import DBAPIError
+
+    from city_api.main import dbapi_error_handler
 
     exc = _asyncpg_uuid_bind_error()
     try:
@@ -414,8 +417,9 @@ def test_api_engine_hides_sql_parameters():
 
 
 def test_cors_exposes_request_id_header():
-    from city_api.main import app
     from starlette.middleware.cors import CORSMiddleware
+
+    from city_api.main import app
 
     (cors,) = [m for m in app.user_middleware if m.cls is CORSMiddleware]
     assert "X-Request-ID" in cors.kwargs["expose_headers"]

@@ -79,18 +79,30 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\[parameters: [^\n]*"), "[parameters: redacted]"),
     (re.compile(r"(invalid input for query argument \$\d+:)[^\n]*"), r"\1 [redacted]"),
     # CITY-686: asyncpg's codec errors are chained under that DataError and quote the
-    # value again, e.g. `ValueError: invalid UUID 'tok-...': length must be ...`.
-    (re.compile(r"(invalid UUID)[^\n]*"), r"\1 [redacted]"),
-    # Postgres data exceptions (SQLSTATE class 22) raised server-side echo the value:
-    # `invalid input syntax for type uuid: "tok-..."`, `invalid input value for enum
-    # x: "..."`, `value "..." is out of range for type integer`.
+    # value again, e.g. `ValueError: invalid UUID 'tok-...': length must be ...`. The
+    # value is always a repr (quoted), so only the quoted part is replaced and the rest
+    # of the line survives.
     (
-        re.compile(r"(invalid input (?:syntax|value) for (?:type|enum) [^:\n]*:)[^\n]*"),
+        re.compile(r"""(invalid UUID )b?(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")"""),
+        r"\1[redacted]",
+    ),
+    # Postgres data exceptions (SQLSTATE class 22) raised server-side echo the value.
+    # Each message ends with the value, so everything after the anchored prefix goes:
+    # `invalid input syntax for type uuid: "tok-..."`, `invalid input value for enum
+    # x: "..."`, `malformed array literal: "..."`, `date/time field value out of
+    # range: "..."`.
+    (
+        re.compile(
+            r"((?:invalid input (?:syntax|value) for (?:type|enum) [^:\n]*"
+            r"|malformed \w+ literal|date/time field value out of range):)[^\n]*"
+        ),
         r"\1 [redacted]",
     ),
+    # ...and these quote it mid-message: `value "..." is out of range for type integer`,
+    # `invalid value "SECR" for "YYYY"` (to_date / to_timestamp).
     (
-        re.compile(r'value "[^\n]*?" is out of range for type'),
-        "value [redacted] is out of range for type",
+        re.compile(r'(\b(?:invalid )?value )"[^\n]*?"( is out of range for type| for ")'),
+        r"\1[redacted]\2",
     ),
     # pydantic ValidationError text echoes the offending input.
     (re.compile(r"input_value=.*?, input_type="), "input_value=[redacted], input_type="),
