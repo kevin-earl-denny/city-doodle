@@ -156,15 +156,34 @@ class TestLinearTrackerGetTicket:
 
         assert ticket is None
 
-    def test_get_ticket_exception(self) -> None:
+    def test_get_ticket_exception_propagates(self) -> None:
+        # CITY-641: an outage must not masquerade as "ticket not found".
         tracker = LinearTracker(api_key="test-fake-key")
 
         with patch.object(
             tracker, "_execute_query", side_effect=requests.RequestException("API error")
         ):
-            ticket = tracker.get_ticket("TEST-1")
+            with pytest.raises(requests.RequestException):
+                tracker.get_ticket("TEST-1")
 
-        assert ticket is None
+    def test_get_ticket_entity_not_found_returns_none(self) -> None:
+        tracker = LinearTracker(api_key="test-fake-key")
+
+        with patch.object(
+            tracker,
+            "_execute_query",
+            side_effect=RuntimeError("Linear API error: Entity not found: Issue"),
+        ):
+            assert tracker.get_ticket("TEST-99999") is None
+
+    def test_get_ticket_auth_error_propagates(self) -> None:
+        tracker = LinearTracker(api_key="test-fake-key")
+
+        with patch.object(
+            tracker, "_execute_query", side_effect=RuntimeError("Linear rejected LINEAR_API_KEY")
+        ):
+            with pytest.raises(RuntimeError, match="LINEAR_API_KEY"):
+                tracker.get_ticket("TEST-1")
 
 
 class TestLinearTrackerListTickets:
@@ -361,7 +380,7 @@ class TestLinearTrackerListTickets:
         # Should only make one API call since we got enough results
         assert mock_query.call_count == 1
 
-    def test_list_tickets_exception_returns_partial(self) -> None:
+    def test_list_tickets_exception_mid_pagination_propagates(self) -> None:
         tracker = LinearTracker(api_key="test-fake-key")
         page1_response = {
             "data": {
@@ -387,21 +406,18 @@ class TestLinearTrackerListTickets:
             "_execute_query",
             side_effect=[page1_response, requests.RequestException("API error")],
         ):
-            tickets = tracker.list_tickets(limit=100)
+            # CITY-641: a partial list is indistinguishable from "that's all".
+            with pytest.raises(requests.RequestException):
+                tracker.list_tickets(limit=100)
 
-        # Should return the tickets from page 1
-        assert len(tickets) == 1
-        assert tickets[0].id == "TEST-1"
-
-    def test_list_tickets_exception_returns_empty(self) -> None:
+    def test_list_tickets_exception_propagates(self) -> None:
         tracker = LinearTracker(api_key="test-fake-key")
 
         with patch.object(
             tracker, "_execute_query", side_effect=requests.RequestException("API error")
         ):
-            tickets = tracker.list_tickets()
-
-        assert tickets == []
+            with pytest.raises(requests.RequestException):
+                tracker.list_tickets()
 
 
 class TestLinearTrackerCreateTicket:
@@ -941,11 +957,17 @@ class TestLinearTrackerListLabels:
             {"id": "label-1", "name": "Bug", "color": "#ff0000"},
             {"id": "label-2", "name": "Feature", "color": "#00ff00"},
         ]
-        mock_response = {"data": {"issueLabels": {"nodes": mock_labels}}}
+        mock_response = {"data": {"team": {"labels": {"nodes": mock_labels}}}}
 
-        with patch.object(tracker, "_execute_query", return_value=mock_response):
+        with patch.object(tracker, "_execute_query", return_value=mock_response) as mock_query:
             labels = tracker.list_labels()
 
+        # CITY-641: team-scoped labels come from `team(id:) { labels }`; the old
+        # `issueLabels(filter: {team: {id: {eq: $teamId}}})` declared $teamId as
+        # String where Linear expects ID, so it always failed validation.
+        query, variables = mock_query.call_args[0]
+        assert "team(id: $teamId)" in query
+        assert variables == {"teamId": "team_abc"}
         assert len(labels) == 2
         assert labels[0] == {"id": "label-1", "name": "Bug", "color": "#ff0000"}
         assert labels[1] == {"id": "label-2", "name": "Feature", "color": "#00ff00"}
@@ -961,15 +983,14 @@ class TestLinearTrackerListLabels:
         call_args = mock_query.call_args
         assert call_args[0][1] is None
 
-    def test_list_labels_exception(self) -> None:
+    def test_list_labels_exception_propagates(self) -> None:
         tracker = LinearTracker(api_key="test-fake-key")
 
         with patch.object(
             tracker, "_execute_query", side_effect=requests.RequestException("API error")
         ):
-            labels = tracker.list_labels()
-
-        assert labels == []
+            with pytest.raises(requests.RequestException):
+                tracker.list_labels()
 
 
 class TestLinearTrackerGetWorkflowStateId:

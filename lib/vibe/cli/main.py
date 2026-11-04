@@ -5,9 +5,14 @@ import re
 import subprocess as _subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 import requests
+
+if TYPE_CHECKING:
+    from lib.vibe.trackers.base import Ticket
+    from lib.vibe.trackers.linear import LinearTracker
 
 from lib.vibe.cli.figma import figma
 from lib.vibe.cli.secrets import main as secrets_group
@@ -221,34 +226,205 @@ def doctor(verbose: bool, live: bool) -> None:
     sys.exit(print_results(results))
 
 
+def _auto_cleanup_worktrees(repo_root: Path) -> None:
+    """Remove worktrees whose Linear ticket is terminal.
+
+    Best-effort: cleanup failure must never block starting new work. Removal
+    is gated on positive proof of completion, so a concurrent agent's
+    freshly-created worktree is never swept.
+    """
+    from lib.vibe.git.worktree_cleanup import (
+        classify_worktrees,
+        remove_worktree_and_branch,
+    )
+
+    try:
+        statuses = classify_worktrees(repo_root)
+    except Exception as e:
+        click.echo(f"  (skipped worktree auto-cleanup: {e})", err=True)
+        return
+
+    removable = [s for s in statuses if s.removable]
+    if not removable:
+        return
+
+    click.echo(f"Auto-cleanup: removing {len(removable)} completed worktree(s)...")
+    for s in removable:
+        ok, msg = remove_worktree_and_branch(s.path, s.branch, repo_root)
+        if ok:
+            click.echo(f"  removed {s.branch} ({s.reason})")
+        else:
+            click.echo(f"  WARN could not remove {s.branch}: {msg}", err=True)
+
+
+def _already_started_guard_message(ticket: "Ticket") -> str | None:
+    """Return an abort message when `bin/vibe do` should refuse to claim a ticket.
+
+    Refuses only when the ticket is already started (In Progress / In Review):
+    another agent may already be working it, and silently spinning up a second
+    worktree is the multi-agent hazard. Returns ``None`` for fresh
+    (Todo/Backlog) tickets — they are claimable — and for terminal tickets,
+    which `_mark_ticket_in_progress` handles separately. Bypassed by ``--force``.
+    """
+    from lib.vibe.git.worktree_cleanup import is_started_status
+
+    if not is_started_status(ticket):
+        return None
+    who = f", assigned to {ticket.assignee}" if ticket.assignee else ""
+    return (
+        f"{ticket.id} is already {ticket.status!r}{who} — someone may already be "
+        "working it. Re-run with --force to claim it anyway."
+    )
+
+
+def _mark_ticket_in_progress(tracker: "LinearTracker", ticket: "Ticket") -> None:
+    """Claim a ticket: assign it to the current user and move it to In Progress.
+
+    Assignment is unconditional — whoever runs `bin/vibe do` takes ownership.
+    That, together with the In Progress status, is the multi-agent "claimed"
+    signal worktree cleanup keys off. Terminal tickets are left untouched (not
+    reopened). An already-started ticket is only reached here via ``--force``;
+    we claim its assignee but leave its status as-is so an In Review ticket
+    isn't dragged back to In Progress. Best-effort — a tracker hiccup must not
+    fail `bin/vibe do` after the worktree exists.
+    """
+    from lib.vibe.git.worktree_cleanup import is_started_status, is_terminal_status
+
+    if is_terminal_status(ticket):
+        click.echo(
+            f"Note: {ticket.id} is {ticket.status!r} — leaving status unchanged "
+            "(not reopening a closed ticket)."
+        )
+        return
+    try:
+        if is_started_status(ticket):
+            tracker.update_ticket(ticket.id, assignee="me")
+            click.echo(f"Assigned {ticket.id} to you (status left as {ticket.status!r}).")
+        else:
+            tracker.update_ticket(ticket.id, status="In Progress", assignee="me")
+            click.echo(f"Moved {ticket.id} to In Progress and assigned it to you.")
+    except Exception as e:
+        click.echo(f"Note: could not claim {ticket.id}: {e}", err=True)
+
+
 @main.command()
 @click.argument("ticket_id")
-def do(ticket_id: str) -> None:
-    """Start working on a ticket (creates worktree and branch from latest main)."""
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help=(
+        "Claim the ticket even if it is already In Progress / In Review, or create "
+        "the worktree even when the ticket can't be found (nothing is claimed then)."
+    ),
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Resolve the ticket and print the branch/worktree that would be created; change nothing.",
+)
+def do(ticket_id: str, force: bool, dry_run: bool) -> None:
+    """Start working on a ticket (creates worktree and branch from latest main).
+
+    The branch is exactly the ticket id (``CITY-123``) unless the configured
+    branching pattern contains ``{title}``. The ticket is fetched and validated
+    *before* anything changes: an unknown ticket, a missing/invalid key, or a
+    key that can't see the configured team exits 1 (``--force`` proceeds
+    without a claim when the ticket is merely not found). Stale worktrees are
+    then auto-removed, but only when their Linear ticket is terminal — a
+    concurrent agent's freshly-created worktree is never swept. The ticket is
+    then moved to In Progress and assigned to you. If it is already started
+    (In Progress / In Review), `do` refuses unless ``--force`` is passed.
+    """
     import subprocess
 
     from lib.vibe.config import load_config
     from lib.vibe.git.branches import format_branch_name, get_main_branch
-    from lib.vibe.git.worktrees import create_worktree, get_primary_repo_root
+    from lib.vibe.git.worktree_cleanup import is_started_status, is_terminal_status
+    from lib.vibe.git.worktrees import (
+        create_worktree,
+        get_primary_repo_root,
+        get_worktree_base_path,
+    )
     from lib.vibe.state import record_ticket_branch
     from lib.vibe.trackers.linear import LinearTracker
     from lib.vibe.ui.components import Spinner
 
     config = load_config()
     tracker_type = config.get("tracker", {}).get("type")
+    team_id = config.get("tracker", {}).get("config", {}).get("team_id")
+    auto_cleanup = config.get("worktrees", {}).get("auto_cleanup", True)
+    repo_root = get_primary_repo_root()
 
-    # Get ticket info if tracker configured
+    # Resolve + validate the ticket before any side effect (cleanup, worktree,
+    # claim), so a typo or wrong-workspace key never leaves an unclaimed worktree.
+    tracker: LinearTracker | None = None
+    ticket: Ticket | None = None
     title = None
     if tracker_type == "linear":
-        tracker = LinearTracker()
-        with Spinner(f"Fetching ticket {ticket_id}"):
-            ticket = tracker.get_ticket(ticket_id)
-        if ticket:
+        tracker = LinearTracker(team_id=team_id)
+        try:
+            with Spinner(f"Fetching ticket {ticket_id}"):
+                ticket = tracker.get_ticket(ticket_id)
+        except (requests.RequestException, RuntimeError) as e:
+            # Don't silently skip the already-started guard and the claim.
+            click.echo(f"Error: could not fetch {ticket_id} from Linear: {e}", err=True)
+            click.echo("Fix the tracker (bin/vibe doctor) and re-run.", err=True)
+            sys.exit(1)
+        if ticket is None:
+            visible = LinearTracker(team_id=team_id).team_visible() if team_id else None
+            reason = (
+                "LINEAR_API_KEY cannot see the configured Linear team"
+                if visible is False
+                else "ticket not found"
+            )
+            if not force:
+                click.echo(f"Error: {ticket_id}: {reason}.", err=True)
+                click.echo(
+                    "Check the id (bin/ticket get), or pass --force to create the "
+                    "worktree without claiming a ticket.",
+                    err=True,
+                )
+                sys.exit(1)
+            click.echo(
+                f"Warning: {ticket_id}: {reason} — --force: creating the worktree "
+                "WITHOUT claiming a ticket.",
+                err=True,
+            )
+        else:
             title = ticket.title
-            click.echo(f"Found ticket: {ticket.title}")
+            click.echo(f"Found ticket: {ticket.title} ({ticket.status})")
 
-    # Create branch name
+    # Guard: refuse to spin up a second worktree on a ticket someone may already
+    # be working. Checked before any worktree is created so --force is a clean
+    # retry, not a cleanup.
+    if ticket is not None and not force:
+        guard_message = _already_started_guard_message(ticket)
+        if guard_message:
+            click.echo(guard_message, err=True)
+            sys.exit(1)
+
     branch_name = format_branch_name(ticket_id, title)
+
+    if dry_run:
+        click.echo(f"Branch: {branch_name}")
+        click.echo(f"Worktree: {get_worktree_base_path() / branch_name}")
+        if ticket is None:
+            claim = "no ticket to claim"
+        elif is_terminal_status(ticket):
+            claim = f"leave its {ticket.status!r} status alone (terminal)"
+        elif is_started_status(ticket):
+            claim = f"assign it to you (status left as {ticket.status!r})"
+        else:
+            claim = "claim it (In Progress + assign to you)"
+        cleanup_note = "run auto-cleanup, " if auto_cleanup else ""
+        click.echo(f"Dry run: would {cleanup_note}create the worktree, and {claim}.")
+        return
+
+    # Safe auto-cleanup of completed worktrees before starting new work.
+    if auto_cleanup:
+        _auto_cleanup_worktrees(repo_root)
+
     click.echo(f"Branch: {branch_name}")
 
     # Fetch latest main so new branch is based on origin/main
@@ -269,8 +445,7 @@ def do(ticket_id: str) -> None:
         click.echo(f"Worktree created at: {worktree.path}")
         click.echo(f"\nTo start working:\n  cd {worktree.path}")
 
-        # Record ticket-to-branch mapping for duplicate PR detection
-        repo_root = get_primary_repo_root()
+        # Record ticket-to-branch mapping (duplicate-PR detection + cleanup age)
         record_ticket_branch(
             ticket_id, branch_name, worktree_path=worktree.path, base_path=repo_root
         )
@@ -278,204 +453,73 @@ def do(ticket_id: str) -> None:
         click.echo(f"Failed to create worktree: {e}", err=True)
         sys.exit(1)
 
+    # Claim: assign to the current user and move to In Progress. Worktree
+    # cleanup treats a non-terminal Linear status as "hands off".
+    if tracker is not None and ticket is not None:
+        _mark_ticket_in_progress(tracker, ticket)
+
 
 @main.command()
 @click.option("--dry-run", is_flag=True, help="Show what would be removed without removing")
 @click.option("--force", is_flag=True, help="Skip confirmation prompt")
 def cleanup(dry_run: bool, force: bool) -> None:
-    """Clean up worktrees for branches that have been merged.
+    """Clean up worktrees whose Linear ticket is complete.
 
-    Detects worktrees whose PRs have been merged and removes them along
-    with their local branches. Runs `bin/vibe doctor` afterward to sync state.
+    A worktree is removed only on positive proof of completion: its Linear
+    ticket is in a terminal state (Done / Canceled / Deployed), it has no
+    uncommitted changes, and it is past a 30-minute creation grace period.
+    Worktrees that cannot be proven complete are always kept — a branch with
+    zero commits is indistinguishable from a merged one, so
+    `git branch --merged` is never consulted. Runs `bin/vibe doctor`
+    afterward to sync state.
     """
-    import json as _json
-    import subprocess
-
-    # Get list of worktrees
-    result = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"],
-        capture_output=True,
-        text=True,
+    from lib.vibe.git.worktree_cleanup import (
+        classify_worktrees,
+        remove_worktree_and_branch,
     )
-    if result.returncode != 0:
-        click.echo("Failed to list worktrees.", err=True)
-        sys.exit(1)
+    from lib.vibe.git.worktrees import get_primary_repo_root
 
-    # Parse worktrees
-    main_worktree = str(Path.cwd().resolve())
-    worktrees: list[dict[str, str]] = []
-    current_wt: dict[str, str] = {}
+    repo_root = get_primary_repo_root()
+    statuses = classify_worktrees(repo_root)
 
-    for line in result.stdout.split("\n"):
-        if line.startswith("worktree "):
-            if current_wt:
-                worktrees.append(current_wt)
-            current_wt = {"path": line.split(" ", 1)[1]}
-        elif line.startswith("branch "):
-            current_wt["branch"] = line.split(" ", 1)[1].replace("refs/heads/", "")
-        elif line == "":
-            if current_wt:
-                worktrees.append(current_wt)
-            current_wt = {}
-    if current_wt:
-        worktrees.append(current_wt)
-
-    # Filter out main worktree
-    feature_worktrees = [
-        wt
-        for wt in worktrees
-        if wt.get("path") and str(Path(wt["path"]).resolve()) != main_worktree
-    ]
-
-    if not feature_worktrees:
+    if not statuses:
         click.echo("No feature worktrees found. Nothing to clean up.")
         return
 
-    # Check each worktree for merged status
-    merged: list[dict[str, object]] = []
-    active: list[dict[str, str]] = []
+    removable = [s for s in statuses if s.removable]
+    protected = [s for s in statuses if not s.removable]
 
-    for wt in feature_worktrees:
-        branch = wt.get("branch", "")
-        if not branch:
-            continue
+    if removable:
+        click.echo(f"\nComplete (safe to remove): {len(removable)}")
+        for s in removable:
+            click.echo(f"  {s.branch} — {s.reason}")
+    if protected:
+        click.echo(f"\nKept: {len(protected)}")
+        for s in protected:
+            click.echo(f"  {s.branch} — {s.reason}")
 
-        # Check if branch has a merged PR
-        try:
-            pr_result = subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "list",
-                    "--head",
-                    branch,
-                    "--state",
-                    "merged",
-                    "--json",
-                    "number,title",
-                    "--limit",
-                    "1",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            if pr_result.returncode == 0 and pr_result.stdout.strip() not in ("", "[]"):
-                prs = _json.loads(pr_result.stdout)
-                if prs:
-                    merged_wt: dict[str, object] = {
-                        **wt,
-                        "pr_number": prs[0].get("number"),
-                        "pr_title": prs[0].get("title", ""),
-                    }
-                    merged.append(merged_wt)
-                    continue
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-        # Check if branch was deleted on remote
-        try:
-            remote_check = subprocess.run(
-                ["git", "ls-remote", "--heads", "origin", branch],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if remote_check.returncode == 0 and not remote_check.stdout.strip():
-                # Branch deleted on remote - likely merged
-                merged_wt = {
-                    **wt,
-                    "pr_number": None,
-                    "pr_title": "(branch deleted on remote)",
-                }
-                merged.append(merged_wt)
-                continue
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-        active.append(wt)
-
-    # Report findings
-    if merged:
-        click.echo(f"\nMerged (safe to remove): {len(merged)}")
-        for mwt in merged:
-            pr_info = f" (PR #{mwt.get('pr_number')})" if mwt.get("pr_number") else ""
-            click.echo(f"  {mwt.get('branch', 'unknown')}{pr_info} — {mwt['path']}")
-
-    if active:
-        click.echo(f"\nStill active: {len(active)}")
-        for awt in active:
-            click.echo(f"  {awt.get('branch', 'unknown')} — {awt['path']}")
-
-    if not merged:
-        click.echo("\nNo merged worktrees found. Nothing to clean up.")
+    if not removable:
+        click.echo("\nNo completed worktrees found. Nothing to clean up.")
         return
 
     if dry_run:
-        click.echo(f"\nDry run: would remove {len(merged)} worktree(s).")
+        click.echo(f"\nDry run: would remove {len(removable)} worktree(s).")
         return
 
-    # Confirm
-    if not force:
-        if not click.confirm(f"\nRemove {len(merged)} merged worktree(s)?", default=True):
-            click.echo("Cancelled.")
-            return
+    if not force and not click.confirm(
+        f"\nRemove {len(removable)} completed worktree(s)?", default=True
+    ):
+        click.echo("Cancelled.")
+        return
 
-    # Remove merged worktrees
     removed = 0
-    for mwt in merged:
-        branch = str(mwt.get("branch", ""))
-        path = mwt.get("path", "")
-
-        # Check for uncommitted changes
-        try:
-            status_result = subprocess.run(
-                ["git", "-C", str(path), "status", "--porcelain"],
-                capture_output=True,
-                text=True,
-            )
-            if status_result.stdout.strip():
-                click.echo(f"  Skipping {branch} (has uncommitted changes)")
-                continue
-        except subprocess.CalledProcessError:
-            pass
-
-        # Remove worktree
-        try:
-            subprocess.run(
-                ["git", "worktree", "remove", str(path)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            click.echo(f"  Removed worktree: {path}")
-        except subprocess.CalledProcessError as e:
-            click.echo(f"  Failed to remove worktree {path}: {e.stderr}", err=True)
-            continue
-
-        # Delete local branch
-        try:
-            subprocess.run(
-                ["git", "branch", "-d", str(branch)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            click.echo(f"  Deleted branch: {branch}")
-        except subprocess.CalledProcessError:
-            # Try force delete if branch wasn't fully merged according to git
-            try:
-                subprocess.run(
-                    ["git", "branch", "-D", str(branch)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                click.echo(f"  Deleted branch: {branch} (force)")
-            except subprocess.CalledProcessError as e:
-                click.echo(f"  Could not delete branch {branch}: {e.stderr}", err=True)
-
-        removed += 1
+    for s in removable:
+        ok, msg = remove_worktree_and_branch(s.path, s.branch, repo_root)
+        if ok:
+            click.echo(f"  Removed {s.branch} — {msg}")
+            removed += 1
+        else:
+            click.echo(f"  Failed to remove {s.branch}: {msg}", err=True)
 
     click.echo(f"\nCleaned up {removed} worktree(s).")
 
@@ -483,7 +527,7 @@ def cleanup(dry_run: bool, force: bool) -> None:
     click.echo("\nRunning doctor to sync state...")
     doctor_results = run_doctor()
     # Just show a summary, not full results
-    passed = sum(1 for r in doctor_results if r.status.value == "\u2713")
+    passed = sum(1 for r in doctor_results if r.status.value == "✓")
     click.echo(f"Doctor: {passed}/{len(doctor_results)} checks passed.")
 
 

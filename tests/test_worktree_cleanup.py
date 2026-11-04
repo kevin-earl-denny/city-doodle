@@ -1,0 +1,227 @@
+"""CITY-641: ticket-aware worktree cleanup (ported from foreclosure-finder DEAL-3854).
+
+Pins the rule: a worktree is removable ONLY on positive proof of completion — a
+terminal Linear ticket, a clean tree, and an age provably past the 30-minute grace
+period. Every ambiguous case resolves to "protect", so a concurrent agent's
+fresh, zero-commit worktree (which `git branch --merged` reports as merged) is
+never swept.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from lib.vibe.git.worktree_cleanup import (
+    GRACE_PERIOD_MINUTES,
+    classify_worktrees,
+    decide_worktree_fate,
+    extract_ticket_id,
+    is_started_status,
+    is_terminal_status,
+)
+from lib.vibe.trackers.base import Ticket
+
+
+def _ticket(status: str = "In Progress", status_type: str | None = None) -> Ticket:
+    return Ticket(
+        id="CITY-641",
+        title="t",
+        description="",
+        status=status,
+        labels=[],
+        url="",
+        raw={},
+        status_type=status_type,
+    )
+
+
+# --- extract_ticket_id -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "branch,expected",
+    [
+        ("CITY-576-fix-rivers-not-properly-connec", "CITY-576"),
+        ("CITY-641", "CITY-641"),
+        ("feature/CITY-12-foo", "CITY-12"),
+        ("no-ticket-here", None),
+        ("", None),
+        ("main", None),
+    ],
+)
+def test_extract_ticket_id(branch: str, expected: str | None) -> None:
+    assert extract_ticket_id(branch) == expected
+
+
+# --- status helpers ----------------------------------------------------------
+
+
+def test_is_terminal_status() -> None:
+    assert is_terminal_status(_ticket(status="Anything", status_type="completed"))
+    assert is_terminal_status(_ticket(status="Anything", status_type="canceled"))
+    assert is_terminal_status(_ticket(status="Done", status_type=None))
+    assert is_terminal_status(_ticket(status="Deployed", status_type="started"))
+    for status, kind in [
+        ("In Progress", "started"),
+        ("In Review", "started"),
+        ("Todo", "unstarted"),
+        ("Backlog", "backlog"),
+    ]:
+        assert not is_terminal_status(_ticket(status=status, status_type=kind))
+
+
+def test_is_started_status() -> None:
+    assert is_started_status(_ticket(status_type="started"))
+    assert is_started_status(_ticket(status="In Review", status_type=None))
+    assert not is_started_status(_ticket(status="Todo", status_type="unstarted"))
+    assert not is_started_status(_ticket(status="Done", status_type="completed"))
+
+
+# --- decide_worktree_fate (pure decision logic) ------------------------------
+
+
+def _decide(**overrides: object) -> tuple[str, str]:
+    """Decide fate from a known-removable baseline, overriding one factor."""
+    kwargs: dict[str, object] = {
+        "ticket_id": "CITY-641",
+        "has_uncommitted_changes": False,
+        "age_minutes": float(GRACE_PERIOD_MINUTES + 10),
+        "ticket": _ticket(status="Done", status_type="completed"),
+    }
+    kwargs.update(overrides)
+    return decide_worktree_fate(**kwargs)  # type: ignore[arg-type]
+
+
+def test_terminal_clean_old_worktree_is_removable() -> None:
+    assert _decide()[0] == "remove"
+    assert _decide(ticket=_ticket(status="Canceled", status_type="canceled"))[0] == "remove"
+
+
+@pytest.mark.parametrize(
+    "status,status_type",
+    [
+        ("Backlog", "backlog"),
+        ("Todo", "unstarted"),
+        ("In Progress", "started"),
+        ("In Review", "started"),
+    ],
+)
+def test_non_terminal_ticket_is_never_removed(status: str, status_type: str) -> None:
+    decision, reason = _decide(ticket=_ticket(status=status, status_type=status_type))
+    assert decision == "protect"
+    assert "active" in reason
+
+
+def test_no_ticket_id_is_protected() -> None:
+    assert _decide(ticket_id=None)[0] == "protect"
+
+
+def test_unresolved_ticket_is_protected() -> None:
+    decision, reason = _decide(ticket=None)
+    assert decision == "protect"
+    assert "CITY-641" in reason
+
+
+def test_uncommitted_changes_beat_terminal_ticket() -> None:
+    decision, reason = _decide(has_uncommitted_changes=True)
+    assert decision == "protect"
+    assert "uncommitted" in reason
+
+
+def test_grace_period_beats_terminal_ticket() -> None:
+    decision, reason = _decide(age_minutes=2.0)
+    assert decision == "protect"
+    assert "grace period" in reason
+
+
+def test_grace_boundary_is_inclusive_of_30_minutes() -> None:
+    assert _decide(age_minutes=float(GRACE_PERIOD_MINUTES))[0] == "remove"
+    assert _decide(age_minutes=float(GRACE_PERIOD_MINUTES) - 0.1)[0] == "protect"
+
+
+def test_unknown_age_is_protected() -> None:
+    # Removal needs proof the worktree is >30 min old; unknown age is not proof.
+    assert _decide(age_minutes=None)[0] == "protect"
+
+
+# --- classify_worktrees against a real git repo -------------------------------
+
+
+class _FakeTracker:
+    def __init__(self, tickets: dict[str, Ticket | None]) -> None:
+        self.tickets = tickets
+        self.lookups: list[str] = []
+
+    def get_ticket(self, ticket_id: str) -> Ticket | None:
+        self.lookups.append(ticket_id)
+        return self.tickets.get(ticket_id)
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+@pytest.fixture
+def repo_with_worktrees(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "README").write_text("x")
+    _git(repo, "add", "README")
+    _git(repo, "commit", "-q", "-m", "init")
+    for branch in ("CITY-1", "CITY-2", "CITY-3", "scratch"):
+        _git(repo, "worktree", "add", "-q", "-b", branch, str(tmp_path / "wts" / branch))
+    (tmp_path / "wts" / "CITY-3" / "dirty.txt").write_text("unsaved")
+    return repo
+
+
+def test_classify_only_removes_terminal_clean_old_worktrees(repo_with_worktrees: Path) -> None:
+    tracker = _FakeTracker(
+        {
+            "CITY-1": _ticket(status="Done", status_type="completed"),
+            "CITY-2": _ticket(status="In Progress", status_type="started"),
+            "CITY-3": _ticket(status="Done", status_type="completed"),
+        }
+    )
+    later = datetime.now() + timedelta(minutes=GRACE_PERIOD_MINUTES + 5)
+    statuses = {
+        s.branch: s
+        for s in classify_worktrees(repo_with_worktrees, tracker=tracker, now=later)  # type: ignore[arg-type]
+    }
+
+    assert set(statuses) == {"CITY-1", "CITY-2", "CITY-3", "scratch"}  # main excluded
+    assert statuses["CITY-1"].removable
+    assert not statuses["CITY-2"].removable  # active ticket
+    assert "uncommitted" in statuses["CITY-3"].reason  # dirty beats Done
+    assert not statuses["CITY-3"].removable
+    assert not statuses["scratch"].removable  # no ticket id
+
+
+def test_classify_protects_fresh_zero_commit_worktree_even_if_done(
+    repo_with_worktrees: Path,
+) -> None:
+    # The concurrent-agent hazard: a just-created branch with zero commits.
+    tracker = _FakeTracker({"CITY-1": _ticket(status="Done", status_type="completed")})
+    statuses = {
+        s.branch: s
+        for s in classify_worktrees(repo_with_worktrees, tracker=tracker)  # type: ignore[arg-type]
+    }
+    assert not any(s.removable for s in statuses.values())
+    assert "grace period" in statuses["CITY-1"].reason
+    assert tracker.lookups == []  # cheap guards short-circuit the Linear lookup
+
+
+def test_classify_protects_when_tracker_lookup_fails(repo_with_worktrees: Path) -> None:
+    class Boom:
+        def get_ticket(self, ticket_id: str) -> Ticket | None:
+            raise RuntimeError("LINEAR_API_KEY not set")
+
+    later = datetime.now() + timedelta(minutes=GRACE_PERIOD_MINUTES + 5)
+    statuses = classify_worktrees(repo_with_worktrees, tracker=Boom(), now=later)  # type: ignore[arg-type]
+    assert statuses and not any(s.removable for s in statuses)

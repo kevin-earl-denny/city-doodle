@@ -3,6 +3,7 @@
 import os
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import click
 import requests
@@ -79,6 +80,35 @@ def ensure_tracker_configured():
     return tracker
 
 
+def _fail_tracker_error(err: Exception) -> NoReturn:
+    """Exit 1 with a clear message when the tracker call itself failed.
+
+    A missing/invalid LINEAR_API_KEY or an API outage must never look like an
+    empty result ("No tickets found", exit 0).
+    """
+    click.echo(f"Error: {err}", err=True)
+    sys.exit(1)
+
+
+def _exit_if_team_invisible(tracker) -> None:
+    """Exit 1 when an empty/not-found result is really "this key can't see the team".
+
+    Called only on the empty path, so the normal case costs no extra API call.
+    A key from another workspace returns no tickets rather than an error, which
+    would otherwise look like a legitimately empty team.
+    """
+    check = getattr(tracker, "team_visible", None)
+    if check is None or check() is not False:
+        return
+    team_id = getattr(tracker, "_team_id", None)
+    click.echo(
+        f"Error: LINEAR_API_KEY cannot see the configured Linear team ({team_id}). "
+        "Use a key from the workspace that owns this team.",
+        err=True,
+    )
+    sys.exit(1)
+
+
 @click.group()
 def main() -> None:
     """Ticket management commands."""
@@ -102,11 +132,14 @@ def get(ticket_id: str, children: bool) -> None:
         if ticket:
             print_ticket(ticket, show_children=children)
         else:
+            _exit_if_team_invisible(tracker)
             click.echo(f"Ticket not found: {ticket_id}")
             sys.exit(1)
     except NotImplementedError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
+    except (RuntimeError, requests.RequestException) as e:
+        _fail_tracker_error(e)
 
 
 @main.command("list")
@@ -178,6 +211,7 @@ def list_tickets(
             tickets = tracker.list_tickets(**kwargs)
 
         if not tickets:
+            _exit_if_team_invisible(tracker)
             click.echo("No tickets found.")
             return
 
@@ -192,6 +226,8 @@ def list_tickets(
     except NotImplementedError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
+    except (RuntimeError, requests.RequestException) as e:
+        _fail_tracker_error(e)
 
 
 @main.command()
@@ -886,6 +922,7 @@ def labels(as_json: bool) -> None:
     try:
         label_list = tracker.list_labels()
         if not label_list:
+            _exit_if_team_invisible(tracker)
             click.echo("No labels found.")
             return
 
@@ -908,6 +945,8 @@ def labels(as_json: bool) -> None:
     except NotImplementedError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
+    except (RuntimeError, requests.RequestException) as e:
+        _fail_tracker_error(e)
 
 
 @main.command("projects")
@@ -1204,4 +1243,9 @@ def print_ticket_summary(ticket: Ticket) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (RuntimeError, requests.RequestException) as e:
+        # Safety net for commands without their own handler: a tracker failure
+        # exits 1 with a one-line message instead of a traceback.
+        _fail_tracker_error(e)

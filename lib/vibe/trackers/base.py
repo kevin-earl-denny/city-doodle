@@ -36,6 +36,9 @@ class Ticket:
     parent_id: str | None = None  # Parent ticket identifier
     parent_title: str | None = None  # Parent ticket title
     children: list["Ticket"] = field(default_factory=list)  # Sub-tasks
+    # Linear workflow-state type: backlog/unstarted/started/completed/canceled.
+    # Stable across state renames — unlike `status`, which is a display name.
+    status_type: str | None = None
 
 
 class TrackerBase(ABC):

@@ -1,10 +1,10 @@
 ---
-description: Clean up worktrees for branches that have been merged
+description: Clean up worktrees whose Linear ticket is complete (ticket-aware, never by merge status)
 ---
 
-# /cleanup - Clean up merged worktrees
+# /cleanup - Clean up finished worktrees
 
-Remove worktrees for branches that have been merged.
+Remove worktrees whose ticket is complete, using `bin/vibe cleanup`.
 
 ## Usage
 
@@ -16,58 +16,48 @@ Remove worktrees for branches that have been merged.
 
 ## What it does
 
-1. Lists all worktrees (`git worktree list`)
-2. For each worktree (except main repo):
-   - Check if the branch has been merged to main
-   - Check if there's an open PR for the branch
-3. Remove worktrees for merged branches
-4. Delete the local branches
-5. Update `.vibe/local_state.json`
-6. Run `git worktree prune` to clean up stale entries
+Runs `bin/vibe cleanup`, the ticket-aware cleanup (`lib/vibe/git/worktree_cleanup.py`). A worktree is removed **only** when all of these hold:
+
+1. its branch carries a ticket id and that Linear ticket is terminal (Done / Canceled),
+2. it has no uncommitted changes, and
+3. it's provably older than the 30-minute grace period.
+
+Anything ambiguous — no ticket id, Linear unreachable, ticket not found, unknown creation time — is **kept**.
+
+**Never decide staleness from `git branch --merged`.** A fresh branch with zero commits looks "merged" while its ticket is still active, and that's how concurrent agents' worktrees get destroyed.
 
 ## Instructions
 
 When the user invokes `/cleanup`:
 
-1. Run `git worktree list` to see all worktrees
-2. For each non-main worktree, check merge status:
-   ```bash
-   git branch --merged main | grep <branch>
-   ```
-3. If merged and no open PR, remove:
-   ```bash
-   git worktree remove <path>
-   git branch -d <branch>
-   ```
-4. Run `bin/vibe doctor` to sync state
-5. Report what was cleaned up
+1. Preview: `bin/vibe cleanup --dry-run`. It lists what would be removed and why each kept worktree is kept.
+2. Show the user the list. Unless they passed `--force`, confirm before removing.
+3. Run `bin/vibe cleanup` (add `--force` only if the user asked). It runs `bin/vibe doctor` afterwards to sync state.
+4. Report what was removed and what was kept, with reasons.
+
+Branch deletion is conservative: `git branch -d` first; `-D` only when the branch tip already exists on a remote. A branch with unpushed commits is kept and reported, never deleted. `git worktree remove` runs without `--force`, so a worktree that turned dirty after classification is still refused.
 
 ## Safety checks
 
-- Never remove worktrees with uncommitted changes (unless `--force`)
-- Never remove worktrees with open PRs
+- Never remove worktrees with uncommitted changes or a non-terminal ticket
+- Never hand-run `git worktree remove` / `git branch -D` on a guess — use `bin/vibe cleanup`
 - Always confirm before removing (unless `--force`)
 
 ## Example
 
 ```
-Cleanup Results
-===============
+Complete (safe to remove): 2
+  CITY-123 — CITY-123 is 'Done'
+  CITY-124 — CITY-124 is 'Canceled'
 
-Removed:
-  - ../project-worktrees/PROJ-123 (merged in PR #45)
-  - ../project-worktrees/PROJ-124 (merged in PR #47)
+Kept: 2
+  CITY-125 — CITY-125 is 'In Progress' (active)
+  CITY-126 — has uncommitted changes
 
-Kept (unmerged):
-  - ../project-worktrees/PROJ-125 (open PR #48)
-
-Kept (uncommitted changes):
-  - ../project-worktrees/PROJ-126
-
-Cleaned up 2 worktrees.
+Cleaned up 2 worktree(s).
 ```
 
 ## Related
 
 - `/doctor` - Check for stale worktrees
-- `/do` - Create new worktrees
+- `/do` - Create new worktrees (also auto-runs this cleanup)

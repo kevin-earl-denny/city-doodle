@@ -12,7 +12,9 @@ def format_branch_name(ticket_id: str, title: str | None = None) -> str:
 
     Args:
         ticket_id: The ticket identifier (e.g., "PROJ-123")
-        title: Optional title to include in branch name
+        title: Ticket title. Used only when the pattern contains ``{title}``;
+            the default pattern ``{PROJ}-{num}`` yields exactly ``CITY-123``
+            (one branch per ticket, named after the ticket).
 
     Returns:
         Formatted branch name
@@ -29,12 +31,12 @@ def format_branch_name(ticket_id: str, title: str | None = None) -> str:
         # Fallback: use ticket_id as-is
         branch_name = ticket_id
 
-    # Optionally append sanitized title
-    if title:
-        # Sanitize title for branch name
-        sanitized = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower())
-        sanitized = sanitized.strip("-")[:30]  # Limit length
-        branch_name = f"{branch_name}-{sanitized}"
+    # A title slug is opt-in via a `{title}` token in the pattern.
+    if "{title}" in branch_name:
+        sanitized = ""
+        if title:
+            sanitized = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")[:30]
+        branch_name = branch_name.replace("{title}", sanitized).strip("-")
 
     return branch_name
 
