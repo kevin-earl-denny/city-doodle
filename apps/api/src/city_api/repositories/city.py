@@ -22,9 +22,7 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 async def list_cities_by_world(db: AsyncSession, world_id: UUID) -> list[CityResponse]:
     """List all cities in a world."""
-    result = await db.execute(
-        select(CityModel).where(CityModel.world_id == world_id)
-    )
+    result = await db.execute(select(CityModel).where(CityModel.world_id == world_id))
     cities = result.scalars().all()
     return [_to_schema(c) for c in cities]
 
@@ -38,12 +36,12 @@ async def get_city(db: AsyncSession, city_id: UUID) -> CityResponse | None:
     return _to_schema(city)
 
 
-async def count_by_classification(
-    db: AsyncSession, world_id: UUID, classification: str
-) -> int:
+async def count_by_classification(db: AsyncSession, world_id: UUID, classification: str) -> int:
     """Count cities of a specific classification in a world."""
     result = await db.execute(
-        select(func.count()).select_from(CityModel).where(
+        select(func.count())
+        .select_from(CityModel)
+        .where(
             CityModel.world_id == world_id,
             CityModel.classification == classification,
         )
@@ -58,9 +56,7 @@ async def create_city(db: AsyncSession, city_create: CityCreate) -> CityResponse
     """
     # Enforce max 3 core cities per world
     if city_create.classification == "core":
-        core_count = await count_by_classification(
-            db, city_create.world_id, "core"
-        )
+        core_count = await count_by_classification(db, city_create.world_id, "core")
         if core_count >= 3:
             raise ValueError("Maximum of 3 core cities per world")
 
@@ -87,7 +83,10 @@ async def update_city(
         return None
 
     # If changing to core, enforce max 3 core cities per world
-    if city_update.classification is not None and city_update.classification.value != city.classification:
+    if (
+        city_update.classification is not None
+        and city_update.classification.value != city.classification
+    ):
         if city_update.classification == "core":
             core_count = await count_by_classification(db, city.world_id, "core")
             if core_count >= 3:

@@ -29,7 +29,8 @@ def main():
         # =====================================================
 
         # district_type enum - matches frontend types
-        conn.execute(text("""
+        conn.execute(
+            text("""
             DO $$ BEGIN
                 CREATE TYPE district_type AS ENUM (
                     'residential', 'downtown', 'commercial', 'industrial',
@@ -37,47 +38,56 @@ def main():
                 );
             EXCEPTION WHEN duplicate_object THEN null;
             END $$;
-        """))
+        """)
+        )
         print("✓ district_type enum")
 
         # station_type enum
-        conn.execute(text("""
+        conn.execute(
+            text("""
             DO $$ BEGIN
                 CREATE TYPE station_type AS ENUM ('subway', 'rail');
             EXCEPTION WHEN duplicate_object THEN null;
             END $$;
-        """))
+        """)
+        )
         print("✓ station_type enum")
 
         # line_type enum
-        conn.execute(text("""
+        conn.execute(
+            text("""
             DO $$ BEGIN
                 CREATE TYPE line_type AS ENUM ('subway', 'rail', 'light_rail', 'bus');
             EXCEPTION WHEN duplicate_object THEN null;
             END $$;
-        """))
+        """)
+        )
         print("✓ line_type enum")
 
         # road_class enum
-        conn.execute(text("""
+        conn.execute(
+            text("""
             DO $$ BEGIN
                 CREATE TYPE road_class AS ENUM (
                     'highway', 'arterial', 'collector', 'local', 'alley', 'trail'
                 );
             EXCEPTION WHEN duplicate_object THEN null;
             END $$;
-        """))
+        """)
+        )
         print("✓ road_class enum")
 
         # node_type enum
-        conn.execute(text("""
+        conn.execute(
+            text("""
             DO $$ BEGIN
                 CREATE TYPE node_type AS ENUM (
                     'intersection', 'endpoint', 'roundabout', 'interchange'
                 );
             EXCEPTION WHEN duplicate_object THEN null;
             END $$;
-        """))
+        """)
+        )
         print("✓ node_type enum")
 
         # =====================================================
@@ -85,7 +95,8 @@ def main():
         # =====================================================
 
         # placed_seeds table
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS placed_seeds (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
@@ -94,12 +105,16 @@ def main():
                 y FLOAT NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
             )
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_placed_seeds_world_id ON placed_seeds(world_id)"))
+        """)
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_placed_seeds_world_id ON placed_seeds(world_id)")
+        )
         print("✓ placed_seeds table")
 
         # road_nodes table
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS road_nodes (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
@@ -109,12 +124,16 @@ def main():
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
             )
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_road_nodes_world_id ON road_nodes(world_id)"))
+        """)
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_road_nodes_world_id ON road_nodes(world_id)")
+        )
         print("✓ road_nodes table")
 
         # road_edges table
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS road_edges (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
@@ -130,15 +149,25 @@ def main():
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
             )
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_road_edges_world_id ON road_edges(world_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_road_edges_start_node ON road_edges(start_node_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_road_edges_end_node ON road_edges(end_node_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_road_edges_class ON road_edges(road_class)"))
+        """)
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_road_edges_world_id ON road_edges(world_id)")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_road_edges_start_node ON road_edges(start_node_id)")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_road_edges_end_node ON road_edges(end_node_id)")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_road_edges_class ON road_edges(road_class)")
+        )
         print("✓ road_edges table")
 
         # districts table
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS districts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
@@ -152,14 +181,20 @@ def main():
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
             )
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_districts_world_id ON districts(world_id)"))
+        """)
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_districts_world_id ON districts(world_id)")
+        )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_districts_type ON districts(type)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_districts_historic ON districts(historic)"))
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_districts_historic ON districts(historic)")
+        )
         print("✓ districts table")
 
         # transit_stations table
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS transit_stations (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
@@ -171,13 +206,23 @@ def main():
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
             )
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_transit_stations_world_id ON transit_stations(world_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_transit_stations_type ON transit_stations(station_type)"))
+        """)
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_transit_stations_world_id ON transit_stations(world_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_transit_stations_type ON transit_stations(station_type)"
+            )
+        )
         print("✓ transit_stations table")
 
         # transit_lines table
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS transit_lines (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
@@ -187,12 +232,16 @@ def main():
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
             )
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_transit_lines_world_id ON transit_lines(world_id)"))
+        """)
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_transit_lines_world_id ON transit_lines(world_id)")
+        )
         print("✓ transit_lines table")
 
         # transit_line_segments table
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS transit_line_segments (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 line_id UUID NOT NULL REFERENCES transit_lines(id) ON DELETE CASCADE,
@@ -202,12 +251,18 @@ def main():
                 travel_time_minutes FLOAT,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
             )
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_transit_segments_line_id ON transit_line_segments(line_id)"))
+        """)
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_transit_segments_line_id ON transit_line_segments(line_id)"
+            )
+        )
         print("✓ transit_line_segments table")
 
         # neighborhoods table
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS neighborhoods (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 world_id UUID NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
@@ -218,8 +273,11 @@ def main():
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
             )
-        """))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_neighborhoods_world_id ON neighborhoods(world_id)"))
+        """)
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_neighborhoods_world_id ON neighborhoods(world_id)")
+        )
         print("✓ neighborhoods table")
 
         conn.commit()

@@ -17,7 +17,9 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt
 
 
-async def create_neighborhood(db: AsyncSession, neighborhood_create: NeighborhoodCreate) -> Neighborhood:
+async def create_neighborhood(
+    db: AsyncSession, neighborhood_create: NeighborhoodCreate
+) -> Neighborhood:
     """Create a new neighborhood."""
     neighborhood = NeighborhoodModel(
         world_id=neighborhood_create.world_id,
@@ -56,7 +58,9 @@ async def create_neighborhoods_bulk(
 
 async def get_neighborhood(db: AsyncSession, neighborhood_id: UUID) -> Neighborhood | None:
     """Get a neighborhood by ID."""
-    result = await db.execute(select(NeighborhoodModel).where(NeighborhoodModel.id == neighborhood_id))
+    result = await db.execute(
+        select(NeighborhoodModel).where(NeighborhoodModel.id == neighborhood_id)
+    )
     neighborhood = result.scalar_one_or_none()
     if neighborhood is None:
         return None
@@ -76,7 +80,9 @@ async def update_neighborhood(
     db: AsyncSession, neighborhood_id: UUID, neighborhood_update: NeighborhoodUpdate
 ) -> Neighborhood | None:
     """Update a neighborhood."""
-    result = await db.execute(select(NeighborhoodModel).where(NeighborhoodModel.id == neighborhood_id))
+    result = await db.execute(
+        select(NeighborhoodModel).where(NeighborhoodModel.id == neighborhood_id)
+    )
     neighborhood = result.scalar_one_or_none()
     if neighborhood is None:
         return None
@@ -97,7 +103,9 @@ async def update_neighborhood(
 
 async def delete_neighborhood(db: AsyncSession, neighborhood_id: UUID) -> bool:
     """Delete a neighborhood."""
-    result = await db.execute(select(NeighborhoodModel).where(NeighborhoodModel.id == neighborhood_id))
+    result = await db.execute(
+        select(NeighborhoodModel).where(NeighborhoodModel.id == neighborhood_id)
+    )
     neighborhood = result.scalar_one_or_none()
     if neighborhood is None:
         return False
@@ -109,7 +117,9 @@ async def delete_neighborhood(db: AsyncSession, neighborhood_id: UUID) -> bool:
 
 async def clear_neighborhoods(db: AsyncSession, world_id: UUID) -> None:
     """Delete all neighborhoods in a world."""
-    result = await db.execute(select(NeighborhoodModel).where(NeighborhoodModel.world_id == world_id))
+    result = await db.execute(
+        select(NeighborhoodModel).where(NeighborhoodModel.world_id == world_id)
+    )
     neighborhoods = result.scalars().all()
     for neighborhood in neighborhoods:
         await db.delete(neighborhood)

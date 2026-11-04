@@ -49,7 +49,9 @@ async def list_districts(
     logger.debug(f"Listing districts: world_id={world_id}, historic_only={historic_only}")
     try:
         await _verify_world_ownership(db, world_id, user_id)
-        result = await district_repo.list_districts_by_world(db, world_id, historic_only=historic_only)
+        result = await district_repo.list_districts_by_world(
+            db, world_id, historic_only=historic_only
+        )
         logger.debug(f"Found {len(result)} districts")
         return result
     except HTTPException:

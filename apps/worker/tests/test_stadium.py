@@ -77,9 +77,9 @@ class TestStadiumTypes:
         # Width=120, Height=100 -> half_w=60, half_h=50
         assert len(corners) == 4
         assert corners[0] == pytest.approx(Point(-60.0, -50.0), abs=0.01)  # top-left
-        assert corners[1] == pytest.approx(Point(60.0, -50.0), abs=0.01)   # top-right
-        assert corners[2] == pytest.approx(Point(60.0, 50.0), abs=0.01)    # bottom-right
-        assert corners[3] == pytest.approx(Point(-60.0, 50.0), abs=0.01)   # bottom-left
+        assert corners[1] == pytest.approx(Point(60.0, -50.0), abs=0.01)  # top-right
+        assert corners[2] == pytest.approx(Point(60.0, 50.0), abs=0.01)  # bottom-right
+        assert corners[3] == pytest.approx(Point(-60.0, 50.0), abs=0.01)  # bottom-left
 
     def test_stadium_placement_corners_with_rotation(self):
         """Stadium corners should be rotated correctly."""
@@ -270,10 +270,13 @@ class TestParkingLotGeneration:
         for lot in lots:
             # Should be at least min_distance from stadium edge
             dist = distance(lot.position, stadium_placement.center)
-            stadium_radius = max(
-                stadium_placement.config.width,
-                stadium_placement.config.height,
-            ) / 2
+            stadium_radius = (
+                max(
+                    stadium_placement.config.width,
+                    stadium_placement.config.height,
+                )
+                / 2
+            )
             assert dist >= stadium_radius + 50 - 1  # 50m min_distance
 
     def test_parking_lots_have_valid_dimensions(self, stadium_placement):
@@ -327,9 +330,7 @@ class TestParkingLotGeneration:
         lots2 = generate_parking_lots(stadium_placement, seed=54321)
 
         # Positions should differ
-        positions_same = all(
-            l1.position == l2.position for l1, l2 in zip(lots1, lots2)
-        )
+        positions_same = all(l1.position == l2.position for l1, l2 in zip(lots1, lots2))
         assert not positions_same
 
     def test_total_capacity_calculation(self, stadium_placement):

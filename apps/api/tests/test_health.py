@@ -85,7 +85,10 @@ class TestCorsOnErrorResponses:
         }
         request = Request(scope)
         result = _add_cors_headers(response, request)
-        assert result.headers["Access-Control-Allow-Origin"] == "https://city-doodle-web-abc123-teamname.vercel.app"
+        assert (
+            result.headers["Access-Control-Allow-Origin"]
+            == "https://city-doodle-web-abc123-teamname.vercel.app"
+        )
 
     @pytest.mark.asyncio
     async def test_unhandled_exception_returns_cors_headers(self, client):
@@ -100,4 +103,7 @@ class TestCorsOnErrorResponses:
         )
         # Health endpoint works fine and gets CORS from middleware
         assert response.status_code == 200
-        assert response.headers.get("Access-Control-Allow-Origin") == "https://city-doodle-web.vercel.app"
+        assert (
+            response.headers.get("Access-Control-Allow-Origin")
+            == "https://city-doodle-web.vercel.app"
+        )

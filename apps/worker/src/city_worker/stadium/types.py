@@ -103,9 +103,9 @@ class StadiumPlacement:
         # Local corners (unrotated)
         local_corners = [
             (-half_w, -half_h),  # top-left
-            (half_w, -half_h),   # top-right
-            (half_w, half_h),    # bottom-right
-            (-half_w, half_h),   # bottom-left
+            (half_w, -half_h),  # top-right
+            (half_w, half_h),  # bottom-right
+            (-half_w, half_h),  # bottom-left
         ]
 
         # Rotate and translate to world coordinates

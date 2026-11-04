@@ -73,8 +73,13 @@ async def list_tiles(
     )
     logger.info(
         "[Terrain] list_tiles: world=%s tile_count=%d tiles_with_terrain=%d",
-        world_id, len(tiles),
-        sum(1 for t in tiles if isinstance(t.features, dict) and t.features.get("type") == "FeatureCollection"),
+        world_id,
+        len(tiles),
+        sum(
+            1
+            for t in tiles
+            if isinstance(t.features, dict) and t.features.get("type") == "FeatureCollection"
+        ),
     )
     return tiles
 
@@ -214,7 +219,10 @@ async def get_or_create_tile(
     tile = await tile_repo.create_tile(db, TileCreate(world_id=world_id, tx=tx, ty=ty))
     logger.info(
         "Created tile with terrain_status=pending: world_id=%s tx=%s ty=%s tile_id=%s",
-        world_id, tx, ty, tile.id,
+        world_id,
+        tx,
+        ty,
+        tile.id,
     )
 
     # Automatically queue a terrain_generation job for the new tile,
@@ -240,12 +248,19 @@ async def get_or_create_tile(
         )
         logger.info(
             "[Terrain trace=%s] Job queued: world=%s tx=%s ty=%s",
-            terrain_trace_id, world_id, tx, ty,
+            terrain_trace_id,
+            world_id,
+            tx,
+            ty,
         )
     except Exception:
         logger.exception(
             "[Terrain trace=%s] Failed to queue job: world=%s tx=%s ty=%s — deleting orphaned tile %s",
-            terrain_trace_id, world_id, tx, ty, tile.id,
+            terrain_trace_id,
+            world_id,
+            tx,
+            ty,
+            tile.id,
         )
         # Roll back any broken session state before attempting cleanup
         await db.rollback()
@@ -258,7 +273,8 @@ async def get_or_create_tile(
         except Exception:
             logger.exception(
                 "[Terrain trace=%s] Failed to clean up orphaned tile %s",
-                terrain_trace_id, tile.id,
+                terrain_trace_id,
+                tile.id,
             )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -280,7 +296,8 @@ async def regenerate_terrain(
     if tile_model is None:
         logger.warning(
             "[Terrain] Tile not found for regeneration: tile_id=%s user_id=%s",
-            tile_id, user_id,
+            tile_id,
+            user_id,
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -292,7 +309,9 @@ async def regenerate_terrain(
     if world_model is None or world_model.user_id != user_id:
         logger.warning(
             "[Terrain] Unauthorized regeneration: tile_id=%s world_id=%s user_id=%s",
-            tile_id, tile_model.world_id, user_id,
+            tile_id,
+            tile_model.world_id,
+            user_id,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -325,12 +344,16 @@ async def regenerate_terrain(
         )
         logger.info(
             "[Terrain] Queued terrain regeneration job: tile_id=%s world_id=%s tx=%s ty=%s",
-            tile_id, tile_model.world_id, tile_model.tx, tile_model.ty,
+            tile_id,
+            tile_model.world_id,
+            tile_model.tx,
+            tile_model.ty,
         )
     except Exception:
         logger.exception(
             "[Terrain] Failed to queue terrain regeneration job: tile_id=%s world_id=%s",
-            tile_id, tile_model.world_id,
+            tile_id,
+            tile_model.world_id,
         )
         # Roll back any broken session state before attempting cleanup
         await db.rollback()

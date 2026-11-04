@@ -12,7 +12,9 @@ class NeighborhoodCreate(BaseModel):
 
     world_id: UUID
     city_id: UUID | None = None
-    name: str = Field(..., min_length=1, max_length=255, description="Display name for the neighborhood")
+    name: str = Field(
+        ..., min_length=1, max_length=255, description="Display name for the neighborhood"
+    )
     geometry: dict[str, Any] = Field(
         ...,
         description="GeoJSON geometry for the neighborhood boundary (Polygon)",

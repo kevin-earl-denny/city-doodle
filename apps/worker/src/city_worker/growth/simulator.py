@@ -99,8 +99,13 @@ class GrowthSimulator:
 
         for year in range(self.config.years):
             self._simulate_year(
-                districts, road_nodes, road_edges, pois,
-                terrain_water_regions, transit_stations, changelog,
+                districts,
+                road_nodes,
+                road_edges,
+                pois,
+                terrain_water_regions,
+                transit_stations,
+                changelog,
             )
 
         return changelog
@@ -152,14 +157,20 @@ class GrowthSimulator:
             #    biased toward road corridors)
             other_districts = [d for d in districts if d["id"] != district["id"]]
             expanded = self._expand_district(
-                district, other_districts, water_regions,
-                road_nodes, changelog,
+                district,
+                other_districts,
+                water_regions,
+                road_nodes,
+                changelog,
             )
 
             # 3. New roads in expanded area
             if expanded:
                 self._add_growth_roads(
-                    district, road_nodes, road_edges, changelog,
+                    district,
+                    road_nodes,
+                    road_edges,
+                    changelog,
                 )
 
             # 4. New POIs if density warrants
@@ -167,7 +178,9 @@ class GrowthSimulator:
                 self._add_growth_pois(district, pois, d_type, changelog)
 
     def _infill_district(
-        self, district: dict, changelog: GrowthChangelog,
+        self,
+        district: dict,
+        changelog: GrowthChangelog,
         transit_stations: list[dict] | None = None,
     ) -> None:
         """Increase density in an existing district."""
@@ -187,7 +200,10 @@ class GrowthSimulator:
                     cx = sum(p[0] for p in valid_pts) / len(valid_pts)
                     cy = sum(p[1] for p in valid_pts) / len(valid_pts)
                     min_dist = min(
-                        (math.hypot(s["position_x"] - cx, s["position_y"] - cy) for s in transit_stations),
+                        (
+                            math.hypot(s["position_x"] - cx, s["position_y"] - cy)
+                            for s in transit_stations
+                        ),
                         default=float("inf"),
                     )
                     if min_dist < 400:  # Core TOD zone
@@ -207,16 +223,18 @@ class GrowthSimulator:
             district["max_height"] = min(district.get("max_height", 4) + 1, 30)
 
         changelog.districts_infilled += 1
-        changelog.entries.append(ChangeEntry(
-            action="infill",
-            entity_type="district",
-            entity_id=str(district["id"]),
-            details={
-                "old_density": old_density,
-                "new_density": district["density"],
-                "max_height": district.get("max_height"),
-            },
-        ))
+        changelog.entries.append(
+            ChangeEntry(
+                action="infill",
+                entity_type="district",
+                entity_id=str(district["id"]),
+                details={
+                    "old_density": old_density,
+                    "new_density": district["density"],
+                    "max_height": district.get("max_height"),
+                },
+            )
+        )
 
     def _expand_district(
         self,
@@ -282,8 +300,12 @@ class GrowthSimulator:
             if od.get("transit_access", False):
                 od_ring = _get_outer_ring(od.get("geometry", {}))
                 if od_ring and len(od_ring) >= 3:
-                    tcx = sum(tp[0] for tp in od_ring if isinstance(tp, list) and len(tp) >= 2) / len(od_ring)
-                    tcy = sum(tp[1] for tp in od_ring if isinstance(tp, list) and len(tp) >= 2) / len(od_ring)
+                    tcx = sum(
+                        tp[0] for tp in od_ring if isinstance(tp, list) and len(tp) >= 2
+                    ) / len(od_ring)
+                    tcy = sum(
+                        tp[1] for tp in od_ring if isinstance(tp, list) and len(tp) >= 2
+                    ) / len(od_ring)
                     transit_centroids.append((tcx, tcy))
 
         base_expansion = self.config.expansion_rate
@@ -324,7 +346,9 @@ class GrowthSimulator:
                 for tcx_n, tcy_n in transit_centroids:
                     transit_angle = math.atan2(tcy_n - cy, tcx_n - cx)
                     # Angular difference (normalised to -pi..pi)
-                    angle_diff = abs((vertex_angle - transit_angle + math.pi) % (2 * math.pi) - math.pi)
+                    angle_diff = abs(
+                        (vertex_angle - transit_angle + math.pi) % (2 * math.pi) - math.pi
+                    )
                     # Within ~60 degrees of the transit direction
                     if angle_diff < math.pi / 3:
                         expansion *= TRANSIT_EXPANSION_BIAS
@@ -365,15 +389,17 @@ class GrowthSimulator:
             geometry["coordinates"] = new_ring
 
         changelog.districts_expanded += 1
-        changelog.entries.append(ChangeEntry(
-            action="expand",
-            entity_type="district",
-            entity_id=str(district["id"]),
-            details={
-                "expansion_rate": base_expansion,
-                "points_constrained": points_constrained,
-            },
-        ))
+        changelog.entries.append(
+            ChangeEntry(
+                action="expand",
+                entity_type="district",
+                entity_id=str(district["id"]),
+                details={
+                    "expansion_rate": base_expansion,
+                    "points_constrained": points_constrained,
+                },
+            )
+        )
         return True
 
     def _add_growth_roads(
@@ -391,7 +417,9 @@ class GrowthSimulator:
         """
         geometry = district.get("geometry", {})
         coords = geometry.get("coordinates", [])
-        ring = coords[0] if isinstance(coords[0], list) and isinstance(coords[0][0], list) else coords
+        ring = (
+            coords[0] if isinstance(coords[0], list) and isinstance(coords[0][0], list) else coords
+        )
         if not ring or len(ring) < 3:
             return
 
@@ -463,8 +491,14 @@ class GrowthSimulator:
             new_endpoints.append(new_node)
 
             self._record_road_addition(
-                node["id"], new_node_id, new_node, road_len,
-                world_id, district, road_edges, changelog,
+                node["id"],
+                new_node_id,
+                new_node,
+                road_len,
+                world_id,
+                district,
+                road_edges,
+                changelog,
             )
             extensions += 1
 
@@ -499,8 +533,14 @@ class GrowthSimulator:
 
             if nearest_node and nearest_dist < 1500:
                 self._record_road_addition(
-                    nearest_node["id"], new_node_id, new_node, nearest_dist,
-                    world_id, district, road_edges, changelog,
+                    nearest_node["id"],
+                    new_node_id,
+                    new_node,
+                    nearest_dist,
+                    world_id,
+                    district,
+                    road_edges,
+                    changelog,
                 )
 
         # Add a cross-street between new endpoints if they're close enough
@@ -510,9 +550,14 @@ class GrowthSimulator:
             cross_dist = math.hypot(p1["x"] - p2["x"], p1["y"] - p2["y"])
             if min_road_length <= cross_dist <= max_road_length * 2:
                 self._record_road_addition(
-                    new_endpoints[0]["id"], new_endpoints[1]["id"],
-                    new_endpoints[1], cross_dist,
-                    world_id, district, road_edges, changelog,
+                    new_endpoints[0]["id"],
+                    new_endpoints[1]["id"],
+                    new_endpoints[1],
+                    cross_dist,
+                    world_id,
+                    district,
+                    road_edges,
+                    changelog,
                 )
 
     def _record_road_addition(
@@ -544,23 +589,27 @@ class GrowthSimulator:
         }
         road_edges.append(new_edge)
 
-        changelog.entries.append(ChangeEntry(
-            action="new_road",
-            entity_type="road_node",
-            entity_id=to_node_id,
-            details={"position": to_node["position"]},
-        ))
-        changelog.entries.append(ChangeEntry(
-            action="new_road",
-            entity_type="road_edge",
-            entity_id=new_edge_id,
-            details={
-                "from_node_id": from_node_id,
-                "to_node_id": to_node_id,
-                "road_class": GROWTH_ROAD_CLASS,
-                "length_meters": round(length, 1),
-            },
-        ))
+        changelog.entries.append(
+            ChangeEntry(
+                action="new_road",
+                entity_type="road_node",
+                entity_id=to_node_id,
+                details={"position": to_node["position"]},
+            )
+        )
+        changelog.entries.append(
+            ChangeEntry(
+                action="new_road",
+                entity_type="road_edge",
+                entity_id=new_edge_id,
+                details={
+                    "from_node_id": from_node_id,
+                    "to_node_id": to_node_id,
+                    "road_class": GROWTH_ROAD_CLASS,
+                    "length_meters": round(length, 1),
+                },
+            )
+        )
         changelog.roads_added += 1
 
     def _add_growth_pois(
@@ -578,10 +627,11 @@ class GrowthSimulator:
         # Count existing POIs near this district
         geometry = district.get("geometry", {})
         coords = geometry.get("coordinates", [])
-        ring = coords[0] if (
-            isinstance(coords[0], list)
-            and isinstance(coords[0][0], list)
-        ) else coords
+        ring = (
+            coords[0]
+            if (isinstance(coords[0], list) and isinstance(coords[0][0], list))
+            else coords
+        )
         if not ring or len(ring) < 3:
             return
 
@@ -617,14 +667,16 @@ class GrowthSimulator:
         pois.append(new_poi)
 
         changelog.pois_added += 1
-        changelog.entries.append(ChangeEntry(
-            action="new_poi",
-            entity_type="poi",
-            entity_id=new_poi_id,
-            details={
-                "type": poi_type,
-                "position_x": new_poi["position_x"],
-                "position_y": new_poi["position_y"],
-                "district_id": str(district["id"]),
-            },
-        ))
+        changelog.entries.append(
+            ChangeEntry(
+                action="new_poi",
+                entity_type="poi",
+                entity_id=new_poi_id,
+                details={
+                    "type": poi_type,
+                    "position_x": new_poi["position_x"],
+                    "position_y": new_poi["position_y"],
+                    "district_id": str(district["id"]),
+                },
+            )
+        )

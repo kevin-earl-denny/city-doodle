@@ -56,7 +56,8 @@ class TransitStation(Base):
     )
     station_type: Mapped[str] = mapped_column(
         PGEnum(
-            "subway", "rail",
+            "subway",
+            "rail",
             name="station_type",
             create_type=False,
         ),
@@ -110,7 +111,8 @@ class TransitLine(Base):
     )
     line_type: Mapped[str] = mapped_column(
         PGEnum(
-            "subway", "rail",
+            "subway",
+            "rail",
             name="line_type",
             create_type=False,
         ),
@@ -188,6 +190,8 @@ class TransitLineSegment(Base):
         Index("ix_transit_line_segments_from_station_id", "from_station_id"),
         Index("ix_transit_line_segments_to_station_id", "to_station_id"),
         Index("ix_transit_line_segments_order", "line_id", "order_in_line"),
-        UniqueConstraint("line_id", "from_station_id", "to_station_id", name="uq_segment_line_stations"),
+        UniqueConstraint(
+            "line_id", "from_station_id", "to_station_id", name="uq_segment_line_stations"
+        ),
         CheckConstraint("from_station_id != to_station_id", name="ck_segment_no_self_ref"),
     )

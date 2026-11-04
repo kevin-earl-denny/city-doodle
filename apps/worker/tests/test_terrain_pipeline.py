@@ -64,6 +64,7 @@ def _make_config(geographic_setting: str, seed: int = TEST_SEED) -> TerrainConfi
 # Helper: collect all features across all tiles of a TerrainResult
 # ---------------------------------------------------------------------------
 
+
 def _all_features(result: TerrainResult) -> list[dict]:
     """Return flattened GeoJSON features from every tile in the result."""
     features: list[dict] = []
@@ -76,6 +77,7 @@ def _all_features(result: TerrainResult) -> list[dict]:
 # ===================================================================
 # Test: TerrainGenerator.generate_3x3 produces valid TerrainResult
 # ===================================================================
+
 
 class TestTerrainGeneratorPipeline:
     """Verify that generate_3x3 produces structurally valid results."""
@@ -120,6 +122,7 @@ class TestTerrainGeneratorPipeline:
 # Test: features_to_geojson produces valid GeoJSON FeatureCollection
 # ===================================================================
 
+
 class TestFeaturesToGeoJSON:
     """Verify GeoJSON output from TileTerrainData.features_to_geojson()."""
 
@@ -152,9 +155,7 @@ class TestFeaturesToGeoJSON:
     def test_each_feature_has_feature_type_property(self, coastal_result):
         for feat in _all_features(coastal_result):
             props = feat["properties"]
-            assert "feature_type" in props, (
-                f"Feature missing feature_type property: {props}"
-            )
+            assert "feature_type" in props, f"Feature missing feature_type property: {props}"
             assert isinstance(props["feature_type"], str)
             assert len(props["feature_type"]) > 0
 
@@ -162,6 +163,7 @@ class TestFeaturesToGeoJSON:
 # ===================================================================
 # Test: Each geographic preset produces valid output
 # ===================================================================
+
 
 class TestGeographicPresets:
     """Ensure every preset generates terrain without errors and with
@@ -212,6 +214,7 @@ class TestGeographicPresets:
 # Test: JSON round-trip preserves data
 # ===================================================================
 
+
 class TestJSONRoundTrip:
     """Verify that serialising to JSON and back preserves the GeoJSON."""
 
@@ -239,9 +242,7 @@ class TestJSONRoundTrip:
             # Normalise original through JSON as well so tuples become lists
             normalised = json.loads(json.dumps(original))
 
-            for norm_feat, rest_feat in zip(
-                normalised["features"], restored["features"]
-            ):
+            for norm_feat, rest_feat in zip(normalised["features"], restored["features"]):
                 assert rest_feat["type"] == norm_feat["type"]
                 assert rest_feat["geometry"] == norm_feat["geometry"]
                 assert rest_feat["properties"] == norm_feat["properties"]
@@ -251,15 +252,14 @@ class TestJSONRoundTrip:
 # Test: Generate and save the sample fixture
 # ===================================================================
 
+
 class TestFixtureValidation:
     """Validate the checked-in sample GeoJSON fixture used by frontend
     tests for schema drift detection."""
 
     def test_fixture_is_valid_feature_collection(self):
         """The checked-in fixture must be a valid GeoJSON FeatureCollection."""
-        assert SAMPLE_GEOJSON_PATH.exists(), (
-            f"Fixture missing at {SAMPLE_GEOJSON_PATH}"
-        )
+        assert SAMPLE_GEOJSON_PATH.exists(), f"Fixture missing at {SAMPLE_GEOJSON_PATH}"
 
         loaded = json.loads(SAMPLE_GEOJSON_PATH.read_text(encoding="utf-8"))
         assert loaded["type"] == "FeatureCollection"
@@ -274,9 +274,7 @@ class TestFixtureValidation:
     def test_fixture_has_major_feature_types(self):
         """Verify the fixture contains a broad mix of feature types."""
         loaded = json.loads(SAMPLE_GEOJSON_PATH.read_text(encoding="utf-8"))
-        types_present = {
-            f["properties"]["feature_type"] for f in loaded["features"]
-        }
+        types_present = {f["properties"]["feature_type"] for f in loaded["features"]}
 
         # The curated fixture should have at least these types
         for expected in ("coastline", "contour", "lake", "beach", "river"):

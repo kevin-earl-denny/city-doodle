@@ -77,9 +77,7 @@ async def list_pois_by_world(
     return [_to_schema(p) for p in pois]
 
 
-async def update_poi(
-    db: AsyncSession, poi_id: UUID, poi_update: POIUpdate
-) -> POI | None:
+async def update_poi(db: AsyncSession, poi_id: UUID, poi_update: POIUpdate) -> POI | None:
     """Update a POI."""
     result = await db.execute(select(POIModel).where(POIModel.id == poi_id))
     poi = result.scalar_one_or_none()

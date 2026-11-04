@@ -264,7 +264,7 @@ async def create_line(
     if any(line.name == line_create.name for line in existing_lines):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"A transit line named \"{line_create.name}\" already exists in this world",
+            detail=f'A transit line named "{line_create.name}" already exists in this world',
         )
     return await transit_repo.create_line(db, line_create)
 
@@ -327,7 +327,7 @@ async def update_line(
         if any(l.name == line_update.name for l in existing_lines if l.id != line_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"A transit line named \"{line_update.name}\" already exists in this world",
+                detail=f'A transit line named "{line_update.name}" already exists in this world',
             )
 
     updated = await transit_repo.update_line(db, line_id, line_update)

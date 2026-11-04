@@ -66,7 +66,10 @@ class RoadNode(Base):
     # create_type=False since the enum is managed by migrations
     node_type: Mapped[str] = mapped_column(
         PGEnum(
-            "intersection", "endpoint", "roundabout", "interchange",
+            "intersection",
+            "endpoint",
+            "roundabout",
+            "interchange",
             name="node_type",
             create_type=False,
         ),
@@ -126,7 +129,12 @@ class RoadEdge(Base):
     # create_type=False since the enum is managed by migrations
     road_class: Mapped[str] = mapped_column(
         PGEnum(
-            "highway", "arterial", "collector", "local", "alley", "trail",
+            "highway",
+            "arterial",
+            "collector",
+            "local",
+            "alley",
+            "trail",
             name="road_class",
             create_type=False,
         ),
@@ -150,7 +158,8 @@ class RoadEdge(Base):
     # CITY-181: Waterfront designation (null = not waterfront)
     waterfront_type: Mapped[str | None] = mapped_column(
         PGEnum(
-            "riverfront_drive", "boardwalk",
+            "riverfront_drive",
+            "boardwalk",
             name="waterfront_type",
             create_type=False,
         ),
