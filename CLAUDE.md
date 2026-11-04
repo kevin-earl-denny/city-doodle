@@ -85,7 +85,9 @@ A PR may merge when **either** of these holds on the **current head SHA**:
 1. **CodeRabbit** has APPROVED it (its latest state-changing review), **or**
 2. **two distinct agent reviewers**, neither of them the author session or its subagents, have posted clean reviews (verdict `pass` or `minor`).
 
-Any `major` verdict on the head blocks it until a new push. A push invalidates earlier reviews. The required `review-gate` status enforces this (`bin/vibe review-gate <n>` checks a PR locally).
+**Exception (Kevin, 2026-11-03):** when a PR is blocking other PRs (a stacked PR, a deploy chain) or work Kevin asked for, **one** clean agent review on the head is enough. Say so in a PR comment when you merge.
+
+Any `major` verdict on the head blocks it until a new push. A push invalidates earlier reviews. The `review-gate` status reports the bar on every PR (`bin/vibe review-gate <n>` checks a PR locally). It is advisory, not a required check (CITY-638), so check it yourself before merging.
 
 **Agent review format.** A review is a GitHub PR **review** (event `COMMENT`, since agents can't approve PRs from their own account). Its exact last non-empty line is the marker printed by `bin/vibe review-marker --reviewer <id> --verdict pass|minor|major --pr <n>`, which has this shape:
 
