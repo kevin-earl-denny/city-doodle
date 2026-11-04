@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # Each preset is a dict of TerrainConfig field overrides.
 # Omitted fields keep the TerrainConfig defaults.
 
@@ -114,7 +113,8 @@ GEOGRAPHIC_PRESETS: dict[str, dict[str, Any]] = {
         "beach_enabled": True,
         "beach_height_band": 0.03,
         "beach_slope_max": 0.15,
-        "bay_enabled": True,
+        # CITY-697: delta fronts are lobes and levees, not bays
+        "bay_enabled": False,
         "bay_min_concavity_angle": 35.0,
         "bay_river_mouth_factor": 3.0,
         "barrier_islands_enabled": True,

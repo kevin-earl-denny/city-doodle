@@ -45,9 +45,7 @@ def _smoothstep(t: NDArray[np.float64]) -> NDArray[np.float64]:
     return t * t * (3.0 - 2.0 * t)
 
 
-def _angle_noise(
-    angles: NDArray[np.float64], seed: int, octaves: int = 4
-) -> NDArray[np.float64]:
+def _angle_noise(angles: NDArray[np.float64], seed: int, octaves: int = 4) -> NDArray[np.float64]:
     """Deterministic noise keyed on angle for organic boundary perturbation.
 
     Returns values roughly in [-1, 1].
@@ -64,7 +62,6 @@ def _angle_noise(
     return result / total_amp
 
 
-
 @dataclass(frozen=True)
 class MaskContext:
     """Context passed to geographic mask functions.
@@ -75,6 +72,8 @@ class MaskContext:
         tile_size: Tile size in world units.
         resolution: Number of height samples per tile edge.
         seed: World seed for deterministic randomness.
+        water_level: The world's (seed-varied) water level, for masks that
+            place land and sea explicitly. None when the caller doesn't know it.
     """
 
     tx: int
@@ -82,6 +81,7 @@ class MaskContext:
     tile_size: float
     resolution: int
     seed: int
+    water_level: float | None = None
 
 
 # Type alias for mask functions.
@@ -91,9 +91,7 @@ MaskFn = Callable[[NDArray[np.float64], MaskContext], NDArray[np.float64]]
 # ── Built-in masks ───────────────────────────────────────────────
 
 
-def identity_mask(
-    heightfield: NDArray[np.float64], ctx: MaskContext
-) -> NDArray[np.float64]:
+def identity_mask(heightfield: NDArray[np.float64], ctx: MaskContext) -> NDArray[np.float64]:
     """No-op mask — returns the heightfield unchanged.
 
     Used as the default for geographic settings that don't need
@@ -103,9 +101,7 @@ def identity_mask(
     return heightfield
 
 
-def inland_mask(
-    heightfield: NDArray[np.float64], ctx: MaskContext
-) -> NDArray[np.float64]:
+def inland_mask(heightfield: NDArray[np.float64], ctx: MaskContext) -> NDArray[np.float64]:
     """Height-floor mask for inland worlds (CITY-388, CITY-551).
 
     Compresses the height range upward so all terrain sits above
@@ -119,9 +115,7 @@ def inland_mask(
     return floor + heightfield * (1.0 - floor)
 
 
-def island_mask(
-    heightfield: NDArray[np.float64], ctx: MaskContext
-) -> NDArray[np.float64]:
+def island_mask(heightfield: NDArray[np.float64], ctx: MaskContext) -> NDArray[np.float64]:
     """Organic island mask for island worlds (CITY-387, CITY-545, CITY-648).
 
     Real islands are rarely round: they're elongated along a volcanic or
@@ -228,9 +222,7 @@ def island_mask(
     floor = 0.5
     inland = np.clip((field - threshold) / 0.5, 0.0, 1.0)
     relief = 0.35 + 0.65 * inland
-    land_height = floor + (1.0 - floor) * (
-        0.5 * heightfield * relief + 0.5 * inland**1.5
-    )
+    land_height = floor + (1.0 - floor) * (0.5 * heightfield * relief + 0.5 * inland**1.5)
 
     # Ocean floor keeps a little noise but always stays below the
     # minimum island water level (~0.37), so no stray islets appear.
@@ -275,9 +267,7 @@ def _fbm_grid(
     return np.stack([np.interp(ys, cys, col) for col in rows.T], axis=1)
 
 
-def peninsula_mask(
-    heightfield: NDArray[np.float64], ctx: MaskContext
-) -> NDArray[np.float64]:
+def peninsula_mask(heightfield: NDArray[np.float64], ctx: MaskContext) -> NDArray[np.float64]:
     """Directional land-protrusion mask for peninsula worlds (CITY-390).
 
     Creates a finger of land jutting into water.  The peninsula axis
@@ -296,10 +286,10 @@ def peninsula_mask(
     direction = _seeded_hash(ctx.seed, 10) * 2.0 * math.pi
 
     # Peninsula geometry (in rotated coordinates along the axis)
-    mainland_u = -ts * 0.8   # Where the mainland starts (behind center)
-    tip_u = ts * 1.0         # Where the tip ends (past center)
-    base_half_w = ts * 0.9   # Half-width at mainland
-    tip_half_w = ts * 0.12   # Half-width at tip
+    mainland_u = -ts * 0.8  # Where the mainland starts (behind center)
+    tip_u = ts * 1.0  # Where the tip ends (past center)
+    base_half_w = ts * 0.9  # Half-width at mainland
+    tip_half_w = ts * 0.12  # Half-width at tip
     tip_falloff = ts * 0.25  # Falloff distance beyond the tip
 
     # Build world-coordinate grids
@@ -313,8 +303,8 @@ def peninsula_mask(
 
     # Rotate into peninsula-aligned coordinate system
     cos_d, sin_d = math.cos(direction), math.sin(direction)
-    u = dx * cos_d + dy * sin_d    # Along axis (mainland -> tip)
-    v = -dx * sin_d + dy * cos_d   # Perpendicular
+    u = dx * cos_d + dy * sin_d  # Along axis (mainland -> tip)
+    v = -dx * sin_d + dy * cos_d  # Perpendicular
 
     # Interpolate half-width along the axis
     t_along = np.clip((u - mainland_u) / (tip_u - mainland_u), 0.0, 1.0)
@@ -328,9 +318,9 @@ def peninsula_mask(
     along_mask = np.ones_like(u)
     # Beyond the tip: smooth falloff
     beyond_tip = u > tip_u
-    along_mask[beyond_tip] = 1.0 - _smoothstep(
-        (u[beyond_tip] - tip_u) / tip_falloff
-    ).astype(np.float64)
+    along_mask[beyond_tip] = 1.0 - _smoothstep((u[beyond_tip] - tip_u) / tip_falloff).astype(
+        np.float64
+    )
     # Behind mainland: always land (continent continues)
     # (along_mask already 1.0 there -- no change needed)
 
@@ -346,9 +336,7 @@ def peninsula_mask(
     return heightfield * mask
 
 
-def river_valley_mask(
-    heightfield: NDArray[np.float64], ctx: MaskContext
-) -> NDArray[np.float64]:
+def river_valley_mask(heightfield: NDArray[np.float64], ctx: MaskContext) -> NDArray[np.float64]:
     """Meandering valley channel mask for river-valley worlds (CITY-391).
 
     Carves a deliberate river valley through the terrain.  The valley
@@ -384,11 +372,11 @@ def river_valley_mask(
     # against land heights near 0.5), while the walls get a shallow
     # depression that reads as low ground but stays dry. A single deep
     # profile flooded the whole inner valley into a ~75px band.
-    river_half_w = ts * 0.03       # River channel half-width
-    bank_w = ts * 0.015            # Width of the steep channel bank
-    valley_half_w = ts * 0.25      # Full valley half-width
-    channel_depression = 0.4       # Height reduction at the river bottom
-    wall_depression = 0.1          # Height reduction across the valley floor
+    river_half_w = ts * 0.03  # River channel half-width
+    bank_w = ts * 0.015  # Width of the steep channel bank
+    valley_half_w = ts * 0.25  # Full valley half-width
+    channel_depression = 0.4  # Height reduction at the river bottom
+    wall_depression = 0.1  # Height reduction across the valley floor
 
     # Build world-coordinate grids
     step = ts / res
@@ -401,13 +389,12 @@ def river_valley_mask(
 
     # Rotate to river-aligned coordinates
     cos_d, sin_d = math.cos(direction), math.sin(direction)
-    u = dx * cos_d + dy * sin_d    # Along river
-    v = -dx * sin_d + dy * cos_d   # Perpendicular
+    u = dx * cos_d + dy * sin_d  # Along river
+    v = -dx * sin_d + dy * cos_d  # Perpendicular
 
     # Meandering centerline offset
-    meander = (
-        meander_amp * np.sin(u * meander_freq + meander_phase)
-        + meander_amp2 * np.sin(u * meander_freq2 + meander_phase2)
+    meander = meander_amp * np.sin(u * meander_freq + meander_phase) + meander_amp2 * np.sin(
+        u * meander_freq2 + meander_phase2
     )
 
     # Perpendicular distance from the meandering centerline
@@ -418,17 +405,14 @@ def river_valley_mask(
     #   2. Valley walls: shallow depression easing out to valley_half_w
     channel_t = np.clip((dist - river_half_w) / bank_w, 0.0, 1.0)
     wall_t = np.clip(dist / valley_half_w, 0.0, 1.0)
-    depression = (
-        channel_depression * (1.0 - _smoothstep(channel_t))
-        + wall_depression * (1.0 - _smoothstep(wall_t))
+    depression = channel_depression * (1.0 - _smoothstep(channel_t)) + wall_depression * (
+        1.0 - _smoothstep(wall_t)
     )
 
     return heightfield - depression
 
 
-def bay_harbor_mask(
-    heightfield: NDArray[np.float64], ctx: MaskContext
-) -> NDArray[np.float64]:
+def bay_harbor_mask(heightfield: NDArray[np.float64], ctx: MaskContext) -> NDArray[np.float64]:
     """Concave bay indentation mask for bay/harbor worlds (CITY-392).
 
     Creates a protected natural harbor by:
@@ -467,9 +451,9 @@ def bay_harbor_mask(
 
     # ── Step 2: Bay carve ──
     # Semi-elliptical depression opening toward the ocean.
-    bay_depth = ts * 0.40   # How far the bay extends into the land
+    bay_depth = ts * 0.40  # How far the bay extends into the land
     bay_half_w = ts * 0.30  # Half-width of the bay opening
-    bay_max_dep = 0.30      # Maximum height depression inside the bay
+    bay_max_dep = 0.30  # Maximum height depression inside the bay
 
     # Width narrows linearly from opening (u ≈ 0) to back (u = -bay_depth)
     t_bay = np.clip((u + bay_depth) / bay_depth, 0.0, 1.0)
@@ -496,9 +480,7 @@ def bay_harbor_mask(
     return result - depression
 
 
-def coastal_mask(
-    heightfield: NDArray[np.float64], ctx: MaskContext
-) -> NDArray[np.float64]:
+def coastal_mask(heightfield: NDArray[np.float64], ctx: MaskContext) -> NDArray[np.float64]:
     """Directional gradient mask for coastal worlds (CITY-575).
 
     Creates an organic coastline by applying a directional gradient
@@ -550,16 +532,14 @@ def coastal_mask(
     bay_noise += 0.2 * np.sin(v / ts * 4.0 * math.pi + bay_phase * 1.7)
 
     # Combine: perturb the gradient transition zone
-    perturbation = (noise * 0.12 + bay_noise * 0.08)
+    perturbation = noise * 0.12 + bay_noise * 0.08
     gradient = gradient + perturbation
     gradient = np.clip(gradient, 0.0, 1.0)
 
     return heightfield * gradient
 
 
-def lakefront_mask(
-    heightfield: NDArray[np.float64], ctx: MaskContext
-) -> NDArray[np.float64]:
+def lakefront_mask(heightfield: NDArray[np.float64], ctx: MaskContext) -> NDArray[np.float64]:
     """Glacial-lake shore mask for lakefront worlds (CITY-447).
 
     Creates a large freshwater lake on one edge of the world by
@@ -596,8 +576,8 @@ def lakefront_mask(
     # Lake geometry: an elliptical depression centered beyond the
     # tile edge.  The lake center sits outside the world so only
     # one edge has the lake shore.
-    lake_center_u = ts * 1.1   # Lake center past the world edge
-    lake_radius_u = ts * 1.2   # Radial extent along u (into the world)
+    lake_center_u = ts * 1.1  # Lake center past the world edge
+    lake_radius_u = ts * 1.2  # Radial extent along u (into the world)
     lake_radius_v = ts * (0.9 + _seeded_hash(ctx.seed, 72) * 0.4)  # 0.9-1.3
 
     # Elliptical distance from lake center
@@ -614,8 +594,8 @@ def lakefront_mask(
     perturbed_dist = ellipse_dist + noise * 0.08
 
     # Transition band: smooth falloff from lake floor to highlands
-    shore_inner = 0.75   # Inside this = full lake depth
-    shore_outer = 1.05   # Outside this = no depression
+    shore_inner = 0.75  # Inside this = full lake depth
+    shore_outer = 1.05  # Outside this = no depression
     t = np.clip(
         (perturbed_dist - shore_inner) / max(shore_outer - shore_inner, 1e-10),
         0.0,
@@ -631,114 +611,18 @@ def lakefront_mask(
     return heightfield - max_depression * depression_strength
 
 
-def delta_mask(
-    heightfield: NDArray[np.float64], ctx: MaskContext
-) -> NDArray[np.float64]:
-    """Fan-shaped river-mouth mask for delta worlds (CITY-393).
+def delta_mask(heightfield: NDArray[np.float64], ctx: MaskContext) -> NDArray[np.float64]:
+    """River-delta landscape for delta worlds (CITY-697).
 
-    Creates a river delta by:
-      1. Flattening the fan region (low-lying terrain near water level).
-      2. Carving radiating channel depressions that fan out from an
-         apex point toward the ocean.
-      3. Leaving narrow strips between channels as delta islands.
-
-    The ocean direction and number of channels are seed-deterministic.
+    The shape comes from the seeded delta network in
+    :mod:`city_worker.terrain.delta_network`: a sea on one side, a low
+    plain inland, and a fan lobe or bird's-foot levee fingers built along the
+    distributaries. Replaces the old straight-spoke channel mask (CITY-393).
     """
-    res = ctx.resolution
-    ts = ctx.tile_size
-    cx, cy = ts * 1.5, ts * 1.5
+    from city_worker.terrain.delta_network import delta_heightfield
 
-    # Ocean direction
-    ocean_dir = _seeded_hash(ctx.seed, 40) * 2.0 * math.pi
-    cos_d, sin_d = math.cos(ocean_dir), math.sin(ocean_dir)
-
-    # Fan apex: slightly behind center (inland side)
-    apex_x = cx - 0.3 * ts * cos_d
-    apex_y = cy - 0.3 * ts * sin_d
-
-    # Fan parameters
-    fan_half_angle = math.pi * 0.35  # ~63° half-spread → 126° total
-    fan_length = ts * 1.2            # How far the fan extends toward ocean
-    num_channels = 5 + int(_seeded_hash(ctx.seed, 41) * 4)  # 5-8
-
-    # Channel half-widths (widen toward ocean)
-    channel_base_hw = ts * 0.015
-    channel_tip_hw = ts * 0.04
-    channel_depression = 0.35
-
-    # Build world-coordinate grids
-    step = ts / res
-    xs = ctx.tx * ts + np.arange(res, dtype=np.float64) * step
-    ys = ctx.ty * ts + np.arange(res, dtype=np.float64) * step
-    xx, yy = np.meshgrid(xs, ys)
-
-    dx = xx - apex_x
-    dy = yy - apex_y
-
-    # Distance and angle from apex
-    dist = np.sqrt(dx * dx + dy * dy)
-    angles = np.arctan2(dy, dx)
-
-    # Angle relative to ocean direction (wrapped to [-π, π])
-    rel_angle = np.arctan2(
-        np.sin(angles - ocean_dir), np.cos(angles - ocean_dir)
-    )
-
-    # ── Step 1: Fan-region flattening ──
-    # Inside the fan cone and within fan_length: flatten terrain
-    in_fan = (np.abs(rel_angle) < fan_half_angle) & (dist < fan_length)
-    # Flatten = compress toward a low value
-    flat_target = 0.35  # Just at/near water level for delta preset
-    t_flat = np.where(in_fan, 0.4, 0.0)  # 40% blend toward flat
-    result = heightfield * (1.0 - t_flat) + flat_target * t_flat
-
-    # ── Step 2: Channel depressions ──
-    # Radiating channels from apex within the fan
-    depression = np.zeros_like(result)
-    for i in range(num_channels):
-        # Channel angle: evenly spread across the fan
-        t_ch = (i + 0.5) / num_channels
-        ch_angle = ocean_dir + fan_half_angle * (2.0 * t_ch - 1.0)
-        # Slight random wobble
-        ch_angle += (_seeded_hash(ctx.seed, 50 + i) - 0.5) * 0.08
-
-        # Perpendicular distance from channel line
-        ch_cos, ch_sin = math.cos(ch_angle), math.sin(ch_angle)
-        # Project onto channel line: u_ch = along channel, v_ch = perp
-        u_ch = dx * ch_cos + dy * ch_sin
-        v_ch = np.abs(-dx * ch_sin + dy * ch_cos)
-
-        # Channel width widens with distance from apex
-        t_dist = np.clip(u_ch / fan_length, 0.0, 1.0)
-        ch_hw = channel_base_hw + (channel_tip_hw - channel_base_hw) * t_dist
-
-        # Only apply where u_ch > 0 (in front of apex, toward ocean)
-        # and within the channel width
-        safe_hw = np.maximum(ch_hw, 1e-10)
-        ch_mask = (u_ch > 0) & (u_ch < fan_length) & (v_ch < ch_hw)
-        ch_strength = np.where(
-            ch_mask,
-            channel_depression * (1.0 - _smoothstep(v_ch / safe_hw)),
-            0.0,
-        )
-        depression = np.maximum(depression, ch_strength)
-
-    # ── Step 3: Feeder river (single channel entering from inland) ──
-    feeder_dir = ocean_dir + math.pi  # Opposite of ocean = inland
-    f_cos, f_sin = math.cos(feeder_dir), math.sin(feeder_dir)
-    u_f = dx * f_cos + dy * f_sin
-    v_f = np.abs(-dx * f_sin + dy * f_cos)
-    feeder_hw = ts * 0.03
-    safe_feeder = np.maximum(feeder_hw, 1e-10)
-    feeder_mask = (u_f > 0) & (v_f < feeder_hw)
-    feeder_dep = np.where(
-        feeder_mask,
-        0.3 * (1.0 - _smoothstep(v_f / safe_feeder)),
-        0.0,
-    )
-    depression = np.maximum(depression, feeder_dep)
-
-    return result - depression
+    water_level = ctx.water_level if ctx.water_level is not None else 0.33
+    return delta_heightfield(heightfield, ctx.tx, ctx.ty, ctx.tile_size, ctx.seed, water_level)
 
 
 # ── Mask registry ────────────────────────────────────────────────
@@ -776,6 +660,7 @@ def apply_geographic_mask(
     tile_size: float,
     resolution: int,
     seed: int,
+    water_level: float | None = None,
 ) -> NDArray[np.float64]:
     """Apply the geographic mask for *geographic_setting* to *heightfield*.
 
@@ -791,6 +676,7 @@ def apply_geographic_mask(
         tile_size: Tile size in world units.
         resolution: Heightfield resolution (samples per edge).
         seed: World seed.
+        water_level: World water level, passed through to masks that need it.
 
     Returns:
         Modified heightfield, clamped to [0, 1].
@@ -802,6 +688,7 @@ def apply_geographic_mask(
         tile_size=tile_size,
         resolution=resolution,
         seed=seed,
+        water_level=water_level,
     )
     result = mask_fn(heightfield, ctx)
     return np.clip(result, 0.0, 1.0)
