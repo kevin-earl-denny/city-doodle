@@ -397,3 +397,20 @@ class TestLimits:
         with pytest.raises(service.BriefRateLimitedError):
             service._check_rate_limit(user)
         service._global.clear()
+
+
+def test_corpus_has_no_raw_terrain_config_values():
+    """The corpus must stay semantic. Raw TerrainConfig numbers go stale with every
+    terrain retune (e.g. CITY-650 noise scale, CITY-682 bays), and the brief
+    never emits them. The compiler owns brief -> settings."""
+    import re
+
+    from city_api.brief.prompt import _KNOWLEDGE_DIR
+
+    forbidden = re.compile(
+        r"existing_engine_preset|height_scale|height_persistence|water_level\s*:|"
+        r"bay_erosion_strength|bay_min_concavity_angle|bay_min_area|beach_height_band"
+    )
+    for path in _KNOWLEDGE_DIR.glob("*.md"):
+        hits = forbidden.findall(path.read_text())
+        assert not hits, f"{path.name} contains engine internals: {sorted(set(hits))}"
