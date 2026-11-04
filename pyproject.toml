@@ -60,6 +60,12 @@ target-version = "py311"
 select = ["E", "F", "I", "N", "W", "UP"]
 ignore = ["E501"]
 
+[tool.ruff.lint.isort]
+# apps/*/src packages are importable from tests and alembic migrations but live
+# outside ruff's default src roots, so ruff would otherwise sort them in with
+# third-party imports (CITY-666).
+known-first-party = ["city_api", "city_worker", "city_shared"]
+
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true

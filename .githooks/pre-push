@@ -3,12 +3,19 @@
 #
 #   ruff check + ruff format --check   changed .py files under apps/api, apps/worker, lib
 #   eslint                             changed .ts/.tsx/.js/.jsx files under apps/web
-#   tsc --noEmit (whole web project)   when anything under apps/web or packages/ changed
+#   tsc --noEmit (whole web project)   when anything under apps/web or packages/ was
+#                                      added, modified, renamed OR deleted
 #   bin/migrations check               when apps/api/alembic changed (warning only)
 #
 # Lint is scoped to files changed on the pushed commits (vs. their merge-base
 # with origin/main) because the tree is not yet lint-clean as a whole; a
 # whole-tree gate would block every push. Touching a file means owning its lint.
+#
+# What gets checked is the PUSHED tree of each ref, not the working tree: each
+# ref's commit is exported with `git archive` into a temp dir and linted there.
+# So `git push origin CITY-NNN` from another checkout, or uncommitted edits in
+# this one, can't produce a false pass or a false block. node_modules is
+# symlinked in from this checkout for eslint/tsc.
 #
 # All blocking checks run, then failures are reported together. A missing tool
 # is a FAILURE, not a skip: a lint gate that silently switches itself off is
@@ -22,118 +29,197 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
 
 ZERO_SHA="0000000000000000000000000000000000000000"
+EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 BASE_REF="origin/main"
-
-# ── Changed files ─────────────────────────────────────────────────────────────
-# git feeds "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref.
-CHANGED=""
-while read -r _local_ref local_sha _remote_ref _remote_sha; do
-  [[ -z "${local_sha:-}" || "$local_sha" == "$ZERO_SHA" ]] && continue  # branch delete
-  base=$(git merge-base "$BASE_REF" "$local_sha" 2>/dev/null || true)
-  if [[ -z "$base" ]]; then
-    echo "$HOOK WARNING: no merge-base with $BASE_REF (run 'git fetch origin'); linting files in the tip commit only."
-    base="$local_sha^"
-  fi
-  CHANGED+="$(git diff --name-only --diff-filter=ACMR "$base" "$local_sha" 2>/dev/null)"$'\n'
-done
-CHANGED=$(printf '%s' "$CHANGED" | sed '/^$/d' | sort -u)
-
-if [[ -z "$CHANGED" ]]; then
-  echo "$HOOK No changed files to check."
-  exit 0
-fi
-
-# Only files that still exist in the working tree can be linted.
-existing() { while IFS= read -r f; do [[ -f "$f" ]] && printf '%s\n' "$f"; done; }
-
-PY_FILES=$(printf '%s\n' "$CHANGED" | grep -E '^(apps/api|apps/worker|lib)/.*\.py$' | existing || true)
-WEB_LINT_FILES=$(printf '%s\n' "$CHANGED" | grep -E '^apps/web/.*\.(ts|tsx|js|jsx)$' | existing || true)
-WEB_CHANGED=$(printf '%s\n' "$CHANGED" | grep -E '^(apps/web|packages)/' || true)
-ALEMBIC_CHANGED=$(printf '%s\n' "$CHANGED" | grep -E '^apps/api/alembic/' || true)
 
 # ── Failure tracking ──────────────────────────────────────────────────────────
 FAILURES=()
+add_failure() {
+  local f
+  for f in "${FAILURES[@]}"; do [[ "$f" == "$1" ]] && return 0; done
+  FAILURES+=("$1")
+}
 run_check() {
   local name="$1"; shift
   if ! "$@"; then
-    FAILURES+=("$name")
+    add_failure "$name"
   fi
 }
 
-# ── 1. ruff ───────────────────────────────────────────────────────────────────
-if [[ -n "$PY_FILES" ]]; then
-  if [[ -x "$REPO_ROOT/.venv/bin/ruff" ]]; then
-    RUFF=("$REPO_ROOT/.venv/bin/ruff")
-  elif command -v ruff &>/dev/null; then
-    RUFF=(ruff)
-  elif command -v uvx &>/dev/null; then
-    RUFF=(uvx ruff)
-  else
-    RUFF=()
-  fi
+# ── Temp trees (removed on exit) ──────────────────────────────────────────────
+TMP_TREES=()
+cleanup_trees() {
+  local t link
+  for t in "${TMP_TREES[@]}"; do
+    # Unlink the node_modules symlinks first so nothing can recurse into them.
+    for link in "$t/node_modules" "$t/apps/web/node_modules"; do
+      [[ -L "$link" ]] && rm -f "$link"
+    done
+    rm -rf "$t"
+  done
+}
+trap cleanup_trees EXIT
 
-  if [[ ${#RUFF[@]} -eq 0 ]] || ! "${RUFF[@]}" --version &>/dev/null; then
-    FAILURES+=("ruff is not installed (brew install ruff, or install uv)")
-  else
-    echo "$HOOK ruff ($(printf '%s\n' "$PY_FILES" | grep -c .) files)..."
-    py_args=()
-    while IFS= read -r f; do py_args+=("$f"); done <<< "$PY_FILES"
-    run_check "ruff check (fix: ruff check --fix <files>)" \
-      "${RUFF[@]}" check --output-format=concise "${py_args[@]}"
-    run_check "ruff format (fix: ruff format <files>)" \
-      "${RUFF[@]}" format --check --diff --quiet "${py_args[@]}"
-  fi
+# ── Tools (resolved once) ─────────────────────────────────────────────────────
+if [[ -x "$REPO_ROOT/.venv/bin/ruff" ]]; then
+  RUFF=("$REPO_ROOT/.venv/bin/ruff")
+elif command -v ruff &>/dev/null; then
+  RUFF=(ruff)
+elif command -v uvx &>/dev/null; then
+  RUFF=(uvx ruff)
+else
+  RUFF=()
 fi
 
-# ── 2. eslint + tsc (apps/web) ────────────────────────────────────────────────
 # npm workspaces hoist binaries to the root node_modules.
 web_bin() {
-  local name="$1"
+  local name="$1" dir
   for dir in "$REPO_ROOT/apps/web/node_modules/.bin" "$REPO_ROOT/node_modules/.bin"; do
     [[ -x "$dir/$name" ]] && { echo "$dir/$name"; return 0; }
   done
   return 1
 }
 
-if [[ -n "$WEB_CHANGED" ]]; then
-  ESLINT=$(web_bin eslint || true)
-  TSC=$(web_bin tsc || true)
+# ── Per-ref check ─────────────────────────────────────────────────────────────
+# Usage: check_ref <local ref> <local sha>
+check_ref() {
+  local ref="$1" sha="$2" base path tree link
+  local py_files=() web_files=() web_changed="" alembic_changed=""
 
-  if [[ -n "$WEB_LINT_FILES" ]]; then
-    if [[ -z "$ESLINT" ]]; then
-      FAILURES+=("eslint is not installed (run 'npm ci' at the repo root)")
+  base=$(git merge-base "$BASE_REF" "$sha" 2>/dev/null || true)
+  if [[ -z "$base" ]]; then
+    echo "$HOOK WARNING: no merge-base with $BASE_REF for $ref (run 'git fetch origin'); checking files in the tip commit only."
+    base=$(git rev-parse -q --verify "$sha^" 2>/dev/null || echo "$EMPTY_TREE")
+  fi
+
+  # NUL-separated (-z) so non-ASCII / odd paths aren't C-quoted and dropped.
+  # Files to lint: added/copied/modified/renamed (they exist in the pushed tree).
+  while IFS= read -r -d '' path; do
+    case "$path" in
+      apps/api/*.py | apps/worker/*.py | lib/*.py) py_files+=("$path") ;;
+      apps/web/*.ts | apps/web/*.tsx | apps/web/*.js | apps/web/*.jsx) web_files+=("$path") ;;
+    esac
+  done < <(git diff --name-only -z --diff-filter=ACMR "$base" "$sha")
+
+  # Triggers: any change INCLUDING deletions (--no-renames splits a rename into
+  # delete + add), so deleting an imported module still runs tsc.
+  while IFS= read -r -d '' path; do
+    case "$path" in
+      apps/web/* | packages/*) web_changed=1 ;;
+    esac
+    case "$path" in
+      apps/api/alembic/*) alembic_changed=1 ;;
+    esac
+  done < <(git diff --name-only -z --no-renames "$base" "$sha")
+
+  if [[ ${#py_files[@]} -eq 0 && -z "$web_changed" && -z "$alembic_changed" ]]; then
+    return 0
+  fi
+
+  # Materialize the pushed tree.
+  tree=$(mktemp -d "${TMPDIR:-/tmp}/city-prepush.XXXXXX") || {
+    add_failure "could not create a temp dir to check $ref"; return 0; }
+  TMP_TREES+=("$tree")
+  if ! git archive --format=tar "$sha" | tar -xf - -C "$tree"; then
+    add_failure "could not export $ref ($sha) for checking"
+    return 0
+  fi
+  for link in node_modules apps/web/node_modules; do
+    if [[ -d "$REPO_ROOT/$link" && -d "$(dirname "$tree/$link")" ]]; then
+      ln -s "$REPO_ROOT/$link" "$tree/$link"
+    fi
+  done
+
+  local suffix=""
+  [[ "$MULTI_REF" == 1 ]] && suffix=" [$ref]"
+  echo "$HOOK checking $ref ($(git rev-parse --short "$sha"))..."
+
+  # 1. ruff
+  if [[ ${#py_files[@]} -gt 0 ]]; then
+    if [[ ${#RUFF[@]} -eq 0 ]] || ! "${RUFF[@]}" --version &>/dev/null; then
+      add_failure "ruff is not installed (brew install ruff, or install uv)"
     else
-      echo "$HOOK eslint ($(printf '%s\n' "$WEB_LINT_FILES" | grep -c .) files)..."
-      web_args=()
-      while IFS= read -r f; do web_args+=("${f#apps/web/}"); done <<< "$WEB_LINT_FILES"
-      run_check "eslint" bash -c 'cd "$1/apps/web" && shift && exec "$@"' _ \
-        "$REPO_ROOT" "$ESLINT" --no-warn-ignored "${web_args[@]}"
+      echo "$HOOK ruff (${#py_files[@]} files)..."
+      run_check "ruff check (fix: ruff check --fix <files>)$suffix" \
+        bash -c 'cd "$1" && shift && exec "$@"' _ "$tree" \
+        "${RUFF[@]}" check --no-cache --output-format=concise "${py_files[@]}"
+      run_check "ruff format (fix: ruff format <files>)$suffix" \
+        bash -c 'cd "$1" && shift && exec "$@"' _ "$tree" \
+        "${RUFF[@]}" format --no-cache --check --diff --quiet "${py_files[@]}"
     fi
   fi
 
-  if [[ -z "$TSC" ]]; then
-    FAILURES+=("tsc is not installed (run 'npm ci' at the repo root)")
-  else
-    echo "$HOOK tsc..."
-    run_check "tsc --noEmit (apps/web)" "$TSC" --noEmit -p "$REPO_ROOT/apps/web/tsconfig.json"
+  # 2. eslint + tsc (apps/web)
+  if [[ -n "$web_changed" ]]; then
+    local eslint tsc web_args=()
+    eslint=$(web_bin eslint || true)
+    tsc=$(web_bin tsc || true)
+
+    if [[ ${#web_files[@]} -gt 0 ]]; then
+      if [[ -z "$eslint" ]]; then
+        add_failure "eslint is not installed (run 'npm ci' at the repo root)"
+      else
+        echo "$HOOK eslint (${#web_files[@]} files)..."
+        for path in "${web_files[@]}"; do web_args+=("${path#apps/web/}"); done
+        run_check "eslint$suffix" bash -c 'cd "$1" && shift && exec "$@"' _ \
+          "$tree/apps/web" "$eslint" --no-warn-ignored "${web_args[@]}"
+      fi
+    fi
+
+    if [[ -z "$tsc" ]]; then
+      add_failure "tsc is not installed (run 'npm ci' at the repo root)"
+    elif [[ ! -f "$tree/apps/web/tsconfig.json" ]]; then
+      add_failure "tsc: $ref has no apps/web/tsconfig.json"
+    else
+      echo "$HOOK tsc..."
+      run_check "tsc --noEmit (apps/web)$suffix" bash -c 'cd "$1" && shift && exec "$@"' _ \
+        "$tree" "$tsc" --noEmit -p apps/web/tsconfig.json
+    fi
   fi
+
+  # 3. Alembic chain (non-blocking). CI's "Assert single Alembic head" check is
+  # the gate; this is an early warning.
+  if [[ -n "$alembic_changed" && -x "$tree/bin/migrations" ]]; then
+    echo "$HOOK alembic chain..."
+    local status=0
+    if [[ -z "${ALEMBIC_CMD:-}" && -x "$REPO_ROOT/.venv/bin/alembic" ]]; then
+      ALEMBIC_CMD="$REPO_ROOT/.venv/bin/alembic" "$tree/bin/migrations" check || status=$?
+    else
+      "$tree/bin/migrations" check || status=$?
+    fi
+    if [[ "$status" -eq 1 ]]; then
+      echo ""
+      echo "$HOOK WARNING: Alembic chain problem above. CI will fail."
+      echo "$HOOK    Multiple heads: update onto origin/main, then bin/migrations fix-heads"
+      echo ""
+    elif [[ "$status" -ne 0 ]]; then
+      echo "$HOOK WARNING: could not check Alembic heads (exit $status); CI will still check."
+    fi
+  fi
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+# git feeds "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref.
+# Read them all first so no check can consume the hook's stdin.
+REFS=()
+SHAS=()
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+  [[ -z "${local_sha:-}" || "$local_sha" == "$ZERO_SHA" ]] && continue  # branch delete
+  REFS+=("$local_ref")
+  SHAS+=("$local_sha")
+done
+
+if [[ ${#SHAS[@]} -eq 0 ]]; then
+  echo "$HOOK No changed files to check."
+  exit 0
 fi
 
-# ── 3. Alembic chain (non-blocking) ───────────────────────────────────────────
-# CI's "Assert single Alembic head" check is the gate; this is an early warning.
-if [[ -n "$ALEMBIC_CHANGED" ]]; then
-  echo "$HOOK alembic chain..."
-  status=0
-  "$REPO_ROOT/bin/migrations" check || status=$?
-  if [[ "$status" -eq 1 ]]; then
-    echo ""
-    echo "$HOOK WARNING: Alembic chain problem above. CI will fail."
-    echo "$HOOK    Multiple heads: update onto origin/main, then bin/migrations fix-heads"
-    echo ""
-  elif [[ "$status" -ne 0 ]]; then
-    echo "$HOOK WARNING: could not check Alembic heads (exit $status); CI will still check."
-  fi
-fi
+MULTI_REF=0
+[[ ${#SHAS[@]} -gt 1 ]] && MULTI_REF=1
+
+for i in "${!SHAS[@]}"; do
+  check_ref "${REFS[$i]}" "${SHAS[$i]}" </dev/null
+done
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 if [[ ${#FAILURES[@]} -gt 0 ]]; then

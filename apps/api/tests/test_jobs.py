@@ -3,6 +3,7 @@
 from uuid import uuid4
 
 import pytest
+
 from city_api.repositories import job as job_repo
 from city_api.schemas import JobStatus
 

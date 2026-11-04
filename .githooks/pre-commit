@@ -14,9 +14,17 @@ HOOK="[pre-commit]"
 # path whose basename is `.env` or starts with `.env.`, at any depth, so
 # `.env.production` and `apps/api/.env` are caught too. `.env.example` is the
 # one committed variant.
-STAGED_ENV="$(git diff --cached --name-only --diff-filter=ACMR \
-    | grep -E '(^|/)\.env($|\.)' \
-    | grep -vE '(^|/)\.env\.example$' || true)"
+# Paths are read NUL-separated (-z): without it git C-quotes non-ASCII paths
+# ("donn\303\251es/.env"), which no longer end in `.env` and slipped through.
+ENV_RE='(^|/)\.env($|\.)'
+EXAMPLE_RE='(^|/)\.env\.example$'
+STAGED_ENV=""
+while IFS= read -r -d '' path; do
+    if [[ "$path" =~ $ENV_RE ]] && ! [[ "$path" =~ $EXAMPLE_RE ]]; then
+        STAGED_ENV+="$path"$'\n'
+    fi
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+STAGED_ENV="${STAGED_ENV%$'\n'}"
 
 if [ -n "$STAGED_ENV" ]; then
     echo "$HOOK ERROR: refusing to commit an env file:" >&2
