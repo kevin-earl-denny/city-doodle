@@ -376,6 +376,45 @@ class TestWaterFeatures:
         assert center_flow > edge_flow
 
 
+class TestNoisyCoastline:
+    """CITY-647: speckle noise near water_level must not explode feature counts."""
+
+    @staticmethod
+    def _speckled_coast():
+        import numpy as np
+
+        # Ocean on the right half, land on the left, plus land heights hovering
+        # at water_level so ~10% of land cells dip into 1-cell "puddles".
+        rng = np.random.default_rng(0)
+        hf = np.full((128, 128), 0.5)
+        hf[:, 64:] = 0.1
+        puddles = rng.random((128, 64)) < 0.1
+        hf[:, :64][puddles] = 0.3
+        return hf
+
+    def test_coastline_ignores_puddles(self):
+        features = extract_coastlines(
+            heightfield=self._speckled_coast(),
+            water_level=0.35,
+            tile_x=0,
+            tile_y=0,
+            tile_size=256.0,
+        )
+        assert len(features) == 1  # just the ocean
+
+    def test_bays_capped_per_tile(self):
+        features = extract_bays(
+            heightfield=self._speckled_coast(),
+            water_level=0.35,
+            tile_x=0,
+            tile_y=0,
+            tile_size=256.0,
+            seed=42,
+            config=BayConfig(max_bays=2),
+        )
+        assert len(features) <= 2
+
+
 class TestTileCoord:
     """Tests for TileCoord dataclass."""
 
