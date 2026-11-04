@@ -1,0 +1,95 @@
+# CodeRabbit configuration (CITY-636)
+# Docs: https://docs.coderabbit.ai/reference/configuration
+# CodeRabbit reads this file only from the default branch; confirm it took
+# effect from the "Configuration used: .coderabbit.yaml" footer on the next PR.
+
+language: en-US
+# NOTE: tone_instructions is capped at 250 chars by CodeRabbit — keep it short.
+# Broader review guidance lives in path_instructions below (no such limit).
+tone_instructions: >
+  Be concise. Only request changes for bugs, security, data loss or
+  correctness. Style nits are informational. A thread is resolved only when
+  fixed, or justified as won't-fix with a reason or linked ticket; "noted" isn't.
+
+early_access: true
+
+reviews:
+  profile: chill
+  # CodeRabbit APPROVES once its comments are resolved. An APPROVED review on
+  # the PR head is one of the two ways to clear the merge bar (CLAUDE.md).
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+    # Every agent PR is authored by the same account, so all sessions share one
+    # CodeRabbit fair-use allowance. Only the first push is auto-reviewed; after
+    # pushing fixes, request a re-review with an `@coderabbitai review` comment.
+    auto_pause_after_reviewed_commits: 1
+  path_filters:
+    - "!**/package-lock.json"
+    - "!.vibe/cache/**"
+    - "!recipes/**"
+  path_instructions:
+    - path: "**"
+      instructions: >
+        Most PRs are agent-authored and follow CLAUDE.md. Flag any committed
+        secret, token, or real .env value as blocking. A bug fix must ship a
+        regression test in the same PR (or say in the PR why it can't); flag a
+        fix without one. Never accept a silent failure: a swallowed exception
+        that returns a fallback is worse than a loud error. When a PR adds a
+        function, component, hook or constant, name a similar existing
+        implementation if there is one (informational).
+    - path: "apps/api/src/**"
+      instructions: >
+        FastAPI + async SQLAlchemy backend. Check for SQL injection via raw
+        queries and missing auth dependencies on routes that read or modify a
+        user's worlds. Literal subpaths must be declared BEFORE `/{param}`
+        routes in the same router. Caught DB exceptions must roll back the
+        session. Never log credentials, tokens, or email addresses.
+    - path: "apps/api/alembic/**"
+      instructions: >
+        Alembic migrations. Revision ids must be unique and the chain must have
+        exactly one head (two migrations sharing a down_revision, or a reused
+        revision id, has broken this repo before). Migrations must not import
+        app packages at module load. Every upgrade needs a working downgrade.
+        A new table needs a matching ORM model in the same PR.
+    - path: "apps/worker/**"
+      instructions: >
+        Background job worker (terrain/growth generation). Jobs must record
+        failure state rather than die silently, must be safe to retry, and must
+        not hold unbounded data in memory (Fly machines are small). Flag
+        CPU-heavy loops without progress updates on long jobs.
+    - path: "apps/web/src/**"
+      instructions: >
+        React 18 + Vite + TypeScript + Tailwind + PixiJS + TanStack Query.
+        Server state goes through TanStack Query; optimistic updates must roll
+        back on API failure. Heavy geometry (district generation, water
+        clipping, road networks) belongs in the Web Worker (src/workers), not
+        the main thread. Flag `!value` / `value || fallback` on numeric fields
+        (a real 0 is not missing). Flag Pixi objects created without being
+        destroyed (GPU memory leaks).
+    - path: "{lib,bin,scripts}/**"
+      instructions: >
+        Developer and agent tooling, not product code. Do not ask for product
+        telemetry. CLIs must fail loudly with a non-zero exit code (0 ok,
+        1 expected error, 2 drift/incident); printing "nothing found" on a
+        missing credential is a bug.
+    - path: ".github/workflows/**"
+      instructions: >
+        Pin third-party actions to a full commit SHA with a `# vX.Y.Z` comment.
+        Every job needs explicit least-privilege `permissions` and a
+        `timeout-minutes`. Never interpolate `${{ github.event.* }}` values
+        into `run:` shell; pass them through `env:`. A workflow that grades a
+        PR must never check out or execute the PR's own code.
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: auto
