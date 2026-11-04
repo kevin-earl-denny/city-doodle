@@ -124,3 +124,29 @@ jobs:
         run: |
           alembic upgrade head
           alembic current
+
+      # Round trip (CITY-685): every downgrade must run, and the chain must
+      # rebuild from base. Downgrades had never been exercised; 018's dropped
+      # an index that 002's downgrade then failed to drop.
+      - name: alembic downgrade base, then upgrade head again
+        env:
+          DATABASE_URL_SYNC: postgresql+psycopg2://postgres:postgres@localhost:5432/city_doodle
+          PGPASSWORD: postgres
+        run: |
+          alembic downgrade base
+          # Base must leave nothing behind but alembic_version: a leftover
+          # table or enum type would hide in a re-upgrade that uses IF NOT EXISTS.
+          leftovers=$(psql -h localhost -U postgres -d city_doodle -Atc "
+            SELECT 'table ' || tablename FROM pg_tables
+              WHERE schemaname = 'public' AND tablename <> 'alembic_version'
+            UNION ALL
+            SELECT 'type ' || t.typname FROM pg_type t
+              JOIN pg_namespace n ON n.oid = t.typnamespace
+              WHERE n.nspname = 'public' AND t.typtype = 'e'")
+          if [ -n "$leftovers" ]; then
+            echo "::error::alembic downgrade base left objects behind:"
+            echo "$leftovers"
+            exit 1
+          fi
+          alembic upgrade head
+          alembic current
