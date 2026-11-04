@@ -88,6 +88,7 @@ def run_doctor(
 
     # Local hooks check
     results.append(check_local_hooks())
+    results.append(check_git_hooks_path())
 
     # Worktree check
     results.append(check_stale_worktrees())
@@ -458,6 +459,36 @@ def check_local_hooks() -> CheckResult:
             fix_hint="Fix JSON syntax in .claude/settings.local.json",
             category="integration",
         )
+
+
+def check_git_hooks_path() -> CheckResult:
+    """Check that git uses the repo's .githooks/ (pre-commit/pre-push guards)."""
+    fix_hint = "Run: git config --local core.hooksPath .githooks"
+    if not Path(".githooks").is_dir():
+        return CheckResult(
+            name="Git hooks",
+            status=Status.SKIP,
+            message="No .githooks/ directory",
+        )
+
+    result = subprocess.run(
+        ["git", "config", "--get", "core.hooksPath"],
+        capture_output=True,
+        text=True,
+    )
+    hooks_path = result.stdout.strip()
+    if hooks_path == ".githooks":
+        return CheckResult(
+            name="Git hooks",
+            status=Status.PASS,
+            message="core.hooksPath is .githooks",
+        )
+    return CheckResult(
+        name="Git hooks",
+        status=Status.WARN,
+        message=f"core.hooksPath is {hooks_path!r}" if hooks_path else "core.hooksPath not set",
+        fix_hint=fix_hint,
+    )
 
 
 def check_stale_worktrees() -> CheckResult:

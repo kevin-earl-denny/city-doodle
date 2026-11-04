@@ -1,5 +1,6 @@
 """Tests for doctor health checks."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from lib.vibe.doctor import (
     CheckResult,
     Status,
     check_config_exists,
+    check_git_hooks_path,
     check_github_config,
     check_python_version,
     check_tracker_config,
@@ -152,6 +154,46 @@ class TestCheckConfigExists:
         result = check_config_exists()
         assert result.status == Status.FAIL
         assert result.fix_hint is not None
+
+
+class TestCheckGitHooksPath:
+    """Tests for check_git_hooks_path."""
+
+    def _repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        (tmp_path / ".githooks").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+    def test_passes_when_hooks_path_set(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._repo(tmp_path, monkeypatch)
+        subprocess.run(["git", "config", "--local", "core.hooksPath", ".githooks"], check=True)
+        assert check_git_hooks_path().status == Status.PASS
+
+    def test_warns_when_hooks_path_unset(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._repo(tmp_path, monkeypatch)
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global"))
+        result = check_git_hooks_path()
+        assert result.status == Status.WARN
+        assert result.fix_hint is not None and "core.hooksPath .githooks" in result.fix_hint
+
+    def test_warns_when_hooks_path_points_elsewhere(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._repo(tmp_path, monkeypatch)
+        subprocess.run(["git", "config", "--local", "core.hooksPath", ".husky"], check=True)
+        result = check_git_hooks_path()
+        assert result.status == Status.WARN
+        assert ".husky" in result.message
+
+    def test_skips_without_githooks_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert check_git_hooks_path().status == Status.SKIP
 
 
 class TestCheckResultDataclass:

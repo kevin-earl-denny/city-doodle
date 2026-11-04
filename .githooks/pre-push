@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Pre-push: run lint and type checks locally before a push reaches CI.
+#
+#   ruff check + ruff format --check   changed .py files under apps/api, apps/worker, lib
+#   eslint                             changed .ts/.tsx/.js/.jsx files under apps/web
+#   tsc --noEmit (whole web project)   when anything under apps/web or packages/ changed
+#   bin/migrations check               when apps/api/alembic changed (warning only)
+#
+# Lint is scoped to files changed on the pushed commits (vs. their merge-base
+# with origin/main) because the tree is not yet lint-clean as a whole; a
+# whole-tree gate would block every push. Touching a file means owning its lint.
+#
+# All blocking checks run, then failures are reported together. A missing tool
+# is a FAILURE, not a skip: a lint gate that silently switches itself off is
+# worse than a blocked push. Bypass only if you've checked another way:
+#   git push --no-verify
+#
+# Setup (once per clone): git config --local core.hooksPath .githooks
+
+HOOK="[pre-push]"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit 1
+
+ZERO_SHA="0000000000000000000000000000000000000000"
+BASE_REF="origin/main"
+
+# ── Changed files ─────────────────────────────────────────────────────────────
+# git feeds "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref.
+CHANGED=""
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  [[ -z "${local_sha:-}" || "$local_sha" == "$ZERO_SHA" ]] && continue  # branch delete
+  base=$(git merge-base "$BASE_REF" "$local_sha" 2>/dev/null || true)
+  if [[ -z "$base" ]]; then
+    echo "$HOOK WARNING: no merge-base with $BASE_REF (run 'git fetch origin'); linting files in the tip commit only."
+    base="$local_sha^"
+  fi
+  CHANGED+="$(git diff --name-only --diff-filter=ACMR "$base" "$local_sha" 2>/dev/null)"$'\n'
+done
+CHANGED=$(printf '%s' "$CHANGED" | sed '/^$/d' | sort -u)
+
+if [[ -z "$CHANGED" ]]; then
+  echo "$HOOK No changed files to check."
+  exit 0
+fi
+
+# Only files that still exist in the working tree can be linted.
+existing() { while IFS= read -r f; do [[ -f "$f" ]] && printf '%s\n' "$f"; done; }
+
+PY_FILES=$(printf '%s\n' "$CHANGED" | grep -E '^(apps/api|apps/worker|lib)/.*\.py$' | existing || true)
+WEB_LINT_FILES=$(printf '%s\n' "$CHANGED" | grep -E '^apps/web/.*\.(ts|tsx|js|jsx)$' | existing || true)
+WEB_CHANGED=$(printf '%s\n' "$CHANGED" | grep -E '^(apps/web|packages)/' || true)
+ALEMBIC_CHANGED=$(printf '%s\n' "$CHANGED" | grep -E '^apps/api/alembic/' || true)
+
+# ── Failure tracking ──────────────────────────────────────────────────────────
+FAILURES=()
+run_check() {
+  local name="$1"; shift
+  if ! "$@"; then
+    FAILURES+=("$name")
+  fi
+}
+
+# ── 1. ruff ───────────────────────────────────────────────────────────────────
+if [[ -n "$PY_FILES" ]]; then
+  if [[ -x "$REPO_ROOT/.venv/bin/ruff" ]]; then
+    RUFF=("$REPO_ROOT/.venv/bin/ruff")
+  elif command -v ruff &>/dev/null; then
+    RUFF=(ruff)
+  elif command -v uvx &>/dev/null; then
+    RUFF=(uvx ruff)
+  else
+    RUFF=()
+  fi
+
+  if [[ ${#RUFF[@]} -eq 0 ]] || ! "${RUFF[@]}" --version &>/dev/null; then
+    FAILURES+=("ruff is not installed (brew install ruff, or install uv)")
+  else
+    echo "$HOOK ruff ($(printf '%s\n' "$PY_FILES" | grep -c .) files)..."
+    py_args=()
+    while IFS= read -r f; do py_args+=("$f"); done <<< "$PY_FILES"
+    run_check "ruff check (fix: ruff check --fix <files>)" \
+      "${RUFF[@]}" check --output-format=concise "${py_args[@]}"
+    run_check "ruff format (fix: ruff format <files>)" \
+      "${RUFF[@]}" format --check --diff --quiet "${py_args[@]}"
+  fi
+fi
+
+# ── 2. eslint + tsc (apps/web) ────────────────────────────────────────────────
+# npm workspaces hoist binaries to the root node_modules.
+web_bin() {
+  local name="$1"
+  for dir in "$REPO_ROOT/apps/web/node_modules/.bin" "$REPO_ROOT/node_modules/.bin"; do
+    [[ -x "$dir/$name" ]] && { echo "$dir/$name"; return 0; }
+  done
+  return 1
+}
+
+if [[ -n "$WEB_CHANGED" ]]; then
+  ESLINT=$(web_bin eslint || true)
+  TSC=$(web_bin tsc || true)
+
+  if [[ -n "$WEB_LINT_FILES" ]]; then
+    if [[ -z "$ESLINT" ]]; then
+      FAILURES+=("eslint is not installed (run 'npm ci' at the repo root)")
+    else
+      echo "$HOOK eslint ($(printf '%s\n' "$WEB_LINT_FILES" | grep -c .) files)..."
+      web_args=()
+      while IFS= read -r f; do web_args+=("${f#apps/web/}"); done <<< "$WEB_LINT_FILES"
+      run_check "eslint" bash -c 'cd "$1/apps/web" && shift && exec "$@"' _ \
+        "$REPO_ROOT" "$ESLINT" --no-warn-ignored "${web_args[@]}"
+    fi
+  fi
+
+  if [[ -z "$TSC" ]]; then
+    FAILURES+=("tsc is not installed (run 'npm ci' at the repo root)")
+  else
+    echo "$HOOK tsc..."
+    run_check "tsc --noEmit (apps/web)" "$TSC" --noEmit -p "$REPO_ROOT/apps/web/tsconfig.json"
+  fi
+fi
+
+# ── 3. Alembic chain (non-blocking) ───────────────────────────────────────────
+# CI's "Assert single Alembic head" check is the gate; this is an early warning.
+if [[ -n "$ALEMBIC_CHANGED" ]]; then
+  echo "$HOOK alembic chain..."
+  status=0
+  "$REPO_ROOT/bin/migrations" check || status=$?
+  if [[ "$status" -eq 1 ]]; then
+    echo ""
+    echo "$HOOK WARNING: Alembic chain problem above. CI will fail."
+    echo "$HOOK    Multiple heads: update onto origin/main, then bin/migrations fix-heads"
+    echo ""
+  elif [[ "$status" -ne 0 ]]; then
+    echo "$HOOK WARNING: could not check Alembic heads (exit $status); CI will still check."
+  fi
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+if [[ ${#FAILURES[@]} -gt 0 ]]; then
+  echo ""
+  echo "$HOOK Pre-push checks FAILED:"
+  for f in "${FAILURES[@]}"; do
+    echo "  ✗ $f"
+  done
+  echo ""
+  echo "$HOOK Fix the above, then push again. To bypass: git push --no-verify"
+  exit 1
+fi
+
+echo "$HOOK All pre-push checks passed."

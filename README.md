@@ -60,7 +60,21 @@ pip install -e ".[dev]"
 pip install -e "apps/api[dev]"
 pip install -e apps/worker
 pip install -e packages/shared
+
+# Enable the repo's git hooks (once per clone; covers every worktree)
+git config --local core.hooksPath .githooks
 ```
+
+The hooks in `.githooks/`:
+
+- **pre-commit** refuses any `.env` / `.env.*` file except `.env.example`, and runs `gitleaks protect --staged` if gitleaks is installed.
+- **pre-push** runs `ruff check` + `ruff format --check` on changed Python files under `apps/api`, `apps/worker` and `lib`, `eslint` on changed `apps/web` files, and `tsc --noEmit` when `apps/web` or `packages/` changed. It also warns if the Alembic chain is broken. A missing tool blocks the push (run `npm install`, install ruff). Bypass with `git push --no-verify` only if you've checked another way.
+
+`bin/vibe doctor` warns when `core.hooksPath` isn't set.
+
+### Migrations
+
+`bin/migrations check` exits 1 on multiple Alembic heads or a duplicate revision ID (2 if alembic itself can't run). `bin/migrations heads` lists heads; `bin/migrations fix-heads` generates the merge migration. CI runs the check on every PR ("Assert single Alembic head").
 
 ### Running the Apps
 

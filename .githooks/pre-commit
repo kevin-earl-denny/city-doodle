@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Pre-commit: block obvious secret leaks before they enter history.
+#
+# Setup (once per clone): git config --local core.hooksPath .githooks
+# Works across worktrees: git resolves the relative path from each worktree root.
+#
+# A fast local guard, not a replacement for the security workflow (gitleaks in
+# CI is the backstop). This only sees what you're about to commit.
+
+set -euo pipefail
+HOOK="[pre-commit]"
+
+# Never allow an env file into a commit, whatever .gitignore says. Matches any
+# path whose basename is `.env` or starts with `.env.`, at any depth, so
+# `.env.production` and `apps/api/.env` are caught too. `.env.example` is the
+# one committed variant.
+STAGED_ENV="$(git diff --cached --name-only --diff-filter=ACMR \
+    | grep -E '(^|/)\.env($|\.)' \
+    | grep -vE '(^|/)\.env\.example$' || true)"
+
+if [ -n "$STAGED_ENV" ]; then
+    echo "$HOOK ERROR: refusing to commit an env file:" >&2
+    echo "$STAGED_ENV" | sed 's/^/  /' >&2
+    echo "$HOOK Secrets belong in .env.local (gitignored); only .env.example is committed." >&2
+    echo "$HOOK Unstage it: git restore --staged <file>" >&2
+    exit 1
+fi
+
+if command -v gitleaks &>/dev/null; then
+    if ! gitleaks protect --staged --config .gitleaks.toml --no-banner --redact; then
+        echo "$HOOK ERROR: gitleaks found a potential secret in staged changes." >&2
+        echo "$HOOK If it is a false positive, allowlist the PATH (not the value) in .gitleaks.toml." >&2
+        exit 1
+    fi
+else
+    echo "$HOOK gitleaks not installed, skipping local secret scan (CI still runs it). brew install gitleaks"
+fi
