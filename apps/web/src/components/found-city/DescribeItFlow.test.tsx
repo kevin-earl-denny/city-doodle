@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { createEvent, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { ApiClientError, type WorldBrief, type WorldBriefResponse } from "../../api/types";
 import { FoundCityModal } from "./FoundCityModal";
 
@@ -217,6 +217,33 @@ describe("Describe it", () => {
       previous: BRIEF,
       refinement: "Put the river on the east side",
     });
+  });
+
+  it("an Enter that confirms an IME composition does not send a refinement", async () => {
+    renderModal();
+    await surveyPrompt();
+    const bar = screen.getByLabelText("Anything to change?");
+    fireEvent.change(bar, { target: { value: "川を東に" } });
+    fireEvent.keyDown(bar, { key: "Enter", isComposing: true });
+    expect(requestBrief).toHaveBeenCalledTimes(1);
+  });
+
+  it("a mouse press in the option menu keeps focus so Safari clicks land", async () => {
+    renderModal();
+    await surveyPrompt();
+    requestBrief.mockResolvedValueOnce(RESPONSE);
+    fireEvent.click(within(legend()).getByRole("button", { name: /^WATER/ }));
+    const menu = screen.getByRole("menu", { name: "Change water" });
+    const option = within(menu).getByRole("menuitemradio", { name: "west" });
+
+    const press = createEvent.mouseDown(option);
+    fireEvent(option, press);
+    expect(press.defaultPrevented).toBe(true);
+    expect(screen.getByRole("menu", { name: "Change water" })).toBeInTheDocument();
+
+    fireEvent.click(option);
+    await waitFor(() => expect(requestBrief).toHaveBeenCalledTimes(2));
+    expect(requestBrief.mock.calls[1][0].refinement).toBe("Change the water to the west");
   });
 
   it("on 503 shows the message and a Draw it fallback", async () => {

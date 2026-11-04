@@ -155,7 +155,8 @@ export function SurveyStep({
                 value={refineText}
                 onChange={(e) => onRefineTextChange(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                  // An Enter that confirms an IME composition (CJK input) is not a submit.
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                     // Don't submit the flow's form; this sends a refinement.
                     e.preventDefault();
                     sendRefinement();
@@ -267,6 +268,10 @@ function OptionMenu({ label, options, current, onPick, onClose }: OptionMenuProp
       role="menu"
       aria-label={`Change ${label.toLowerCase()}`}
       onKeyDown={handleKeyDown}
+      // Safari on macOS doesn't focus buttons on click, so a mouse press would blur
+      // the focused option with relatedTarget = null and close the menu before the
+      // option's onClick runs. Keeping focus where it is lets the click land.
+      onMouseDown={(e) => e.preventDefault()}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onClose();
       }}
