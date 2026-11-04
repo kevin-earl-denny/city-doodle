@@ -7,6 +7,7 @@ import sys
 from city_worker.config import settings
 from city_worker.observability import configure_axiom_logging
 from city_worker.runner import JobRunner
+from city_worker.terrain.noise import warm_noise_jit
 
 
 def setup_logging() -> None:
@@ -36,6 +37,11 @@ async def main() -> None:
     setup_logging()
     logger = logging.getLogger(__name__)
     logger.info("City Doodle Worker starting...")
+
+    # CITY-700: load the JIT-compiled noise kernel before taking jobs, so the
+    # first job doesn't pay the cache load (or a full compile if the image's
+    # cache doesn't match this machine).
+    logger.info("Noise JIT ready in %.1fs", warm_noise_jit())
 
     runner = JobRunner()
     await runner.run()

@@ -110,6 +110,24 @@ class TestHeightfieldGeneration:
         with pytest.raises(ValueError):
             generate_heightfield(seed=1, tx=0, ty=0, tile_size=tile_size, resolution=resolution)
 
+    def test_noise_kernel_is_jit_compiled(self):
+        """numba must be installed so opensimplex compiles its kernel (CITY-700).
+
+        Without numba, opensimplex silently falls back to a no-op decorator
+        and runs noise2array as pure-Python loops, ~20x slower (80-85% of a
+        world's generation time on Fly). Removing numba from the worker's
+        requirements must fail loudly here, not just make worlds slow.
+        """
+        from numba.core.registry import CPUDispatcher
+        from opensimplex import internals
+
+        from city_worker.terrain.noise import warm_noise_jit
+
+        assert isinstance(internals._noise2a, CPUDispatcher)
+        assert warm_noise_jit() >= 0.0
+        # The warm-up compiled exactly the signature production calls use
+        assert len(internals._noise2a.signatures) >= 1
+
     def test_heightfield_deterministic(self):
         """Same parameters should produce identical heightfields."""
         h1 = generate_heightfield(seed=42, tx=5, ty=3, tile_size=1000.0, resolution=32)
