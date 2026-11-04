@@ -6,9 +6,14 @@ from typing import Any
 
 import numpy as np
 
+from city_worker.terrain.barrier_islands import (
+    BarrierIslandConfig,
+    extract_barrier_islands,
+)
 from city_worker.terrain.bays import BayConfig, extract_bays
 from city_worker.terrain.clip import clip_features_to_tile
 from city_worker.terrain.contours import extract_contours, pad_heightfield_for_contours
+from city_worker.terrain.deltas import extract_deltas
 from city_worker.terrain.geographic_masks import apply_geographic_mask
 from city_worker.terrain.noise import apply_erosion, generate_heightfield
 from city_worker.terrain.types import (
@@ -17,11 +22,6 @@ from city_worker.terrain.types import (
     TerrainResult,
     TileTerrainData,
 )
-from city_worker.terrain.barrier_islands import (
-    BarrierIslandConfig,
-    extract_barrier_islands,
-)
-from city_worker.terrain.deltas import extract_deltas
 from city_worker.terrain.water import (
     calculate_flow_accumulation,
     extract_beaches,
@@ -61,9 +61,19 @@ class TerrainGenerator:
 
         # Phase names used for aggregated timing summary
         phase_names = [
-            "heightfield", "mask", "erosion", "flow", "coastlines",
-            "bays", "barriers", "rivers", "deltas", "lakes", "beaches",
-            "contours", "clip",
+            "heightfield",
+            "mask",
+            "erosion",
+            "flow",
+            "coastlines",
+            "bays",
+            "barriers",
+            "rivers",
+            "deltas",
+            "lakes",
+            "beaches",
+            "contours",
+            "clip",
         ]
         phase_totals = {name: 0.0 for name in phase_names}
 
@@ -112,7 +122,10 @@ class TerrainGenerator:
         timing_parts = " ".join(f"{name}={phase_totals[name]:.1f}s" for name in phase_names)
         logger.info(
             "[Terrain] Generated 3x3 in %.1fs (%s) setting=%s features=%d",
-            total_s, timing_parts, self.config.geographic_setting, total_features,
+            total_s,
+            timing_parts,
+            self.config.geographic_setting,
+            total_features,
         )
 
         return TerrainResult(center=center_data, neighbors=tiles)
@@ -214,6 +227,7 @@ class TerrainGenerator:
             for f in bays:
                 if f.type == "bay":
                     from shapely.geometry import shape as _shape
+
                     bay_polygons.append(_shape(f.geometry))
 
         t_bays = time.perf_counter()
@@ -245,6 +259,7 @@ class TerrainGenerator:
             for f in barrier_islands:
                 if f.type == "lagoon":
                     from shapely.geometry import shape
+
                     lagoon_polygons.append(shape(f.geometry))
 
         t_barriers = time.perf_counter()
@@ -254,6 +269,7 @@ class TerrainGenerator:
         for f in coastlines:
             if f.type == "coastline":
                 from shapely.geometry import shape as _shape_coast
+
                 coastline_polys.append(_shape_coast(f.geometry))
 
         # Rivers (moved before beaches so river geometries can be used
@@ -279,6 +295,7 @@ class TerrainGenerator:
         river_lines: list = []
         for f in rivers:
             from shapely.geometry import shape as _shape
+
             river_lines.append(_shape(f.geometry))
 
         t_rivers = time.perf_counter()
@@ -320,6 +337,7 @@ class TerrainGenerator:
         lake_polygons: list = []
         for f in lakes:
             from shapely.geometry import shape as _shape
+
             lake_polygons.append(_shape(f.geometry))
 
         t_lakes = time.perf_counter()
@@ -375,7 +393,11 @@ class TerrainGenerator:
         timing_parts = " ".join(f"{k}={v:.1f}s" for k, v in timings.items())
         logger.info(
             "[Terrain] Tile (%d, %d) in %.1fs (%s) features=%d",
-            tx, ty, total_s, timing_parts, len(features),
+            tx,
+            ty,
+            total_s,
+            timing_parts,
+            len(features),
         )
 
         tile_data = TileTerrainData(

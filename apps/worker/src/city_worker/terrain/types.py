@@ -3,16 +3,15 @@
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-
 # Lake type classifications based on geological origin and shape
 LakeType = Literal[
-    "glacial",    # Irregular shores, formed by glacial activity (Great Lakes, Finger Lakes)
-    "crater",     # Circular, volcanic caldera (Crater Lake)
-    "oxbow",      # Crescent-shaped, formed from river meander cutoff
+    "glacial",  # Irregular shores, formed by glacial activity (Great Lakes, Finger Lakes)
+    "crater",  # Circular, volcanic caldera (Crater Lake)
+    "oxbow",  # Crescent-shaped, formed from river meander cutoff
     "reservoir",  # Man-made with dam at one end
-    "rift",       # Long, narrow, deep (Lake Victoria, Lake Baikal)
-    "pond",       # Small body of water
-    "kettle",     # Small, circular, formed by glacial ice blocks
+    "rift",  # Long, narrow, deep (Lake Victoria, Lake Baikal)
+    "pond",  # Small body of water
+    "kettle",  # Small, circular, formed by glacial ice blocks
 ]
 
 # Default lake type when classification is uncertain

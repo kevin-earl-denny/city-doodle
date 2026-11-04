@@ -17,8 +17,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 from shapely.errors import GEOSException, TopologicalError
-from shapely.geometry import LineString, MultiPolygon, Point, Polygon
-from shapely.ops import unary_union
+from shapely.geometry import LineString, MultiPolygon, Polygon
 
 from city_worker.terrain.types import TerrainFeature
 
@@ -285,9 +284,7 @@ def determine_inlet_positions(
 
     for idx in candidates:
         # Check spacing from previous inlets
-        min_dist = min(
-            abs(idx - other) for other in inlets
-        ) if inlets else float('inf')
+        min_dist = min(abs(idx - other) for other in inlets) if inlets else float("inf")
 
         if min_dist >= config.inlet_spacing_min:
             # Random chance based on energy
@@ -394,12 +391,14 @@ def generate_island_chain(
                     # Simplify for cleaner geometry
                     poly = poly.simplify(cell_size * 0.5, preserve_topology=True)
                     if poly.is_valid:
-                        islands.append({
-                            "geometry": poly,
-                            "length": end_idx - start_idx,
-                            "has_inlet_start": start_idx in inlet_positions,
-                            "has_inlet_end": end_idx in inlet_positions,
-                        })
+                        islands.append(
+                            {
+                                "geometry": poly,
+                                "length": end_idx - start_idx,
+                                "has_inlet_start": start_idx in inlet_positions,
+                                "has_inlet_end": end_idx in inlet_positions,
+                            }
+                        )
             except (GEOSException, TopologicalError, ValueError) as e:
                 logger.warning("Skipping invalid barrier island polygon: %s", e)
 
@@ -501,9 +500,7 @@ def generate_tidal_flats(
         # We create a thin strip along the inner edge
         try:
             # Create a small buffer and intersect with lagoon
-            flat_buffer = island.buffer(
-                island.length * config.tidal_flat_width_ratio * 0.1
-            )
+            flat_buffer = island.buffer(island.length * config.tidal_flat_width_ratio * 0.1)
             if lagoon is not None and lagoon.is_valid:
                 flat_area = flat_buffer.intersection(lagoon)
                 if not flat_area.is_empty and flat_area.area > 0:
@@ -765,8 +762,7 @@ def extract_barrier_islands(
                         },
                         properties={
                             "width": config.inlet_width_min
-                            + (config.inlet_width_max - config.inlet_width_min)
-                            * energy[inlet_idx],
+                            + (config.inlet_width_max - config.inlet_width_min) * energy[inlet_idx],
                             "energy": energy[inlet_idx],
                             "segment_index": seg_idx,
                         },
