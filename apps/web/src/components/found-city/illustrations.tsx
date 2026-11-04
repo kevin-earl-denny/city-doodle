@@ -656,6 +656,9 @@ export function LandPlateArt({ land, story, placeName }: LandPlateArtProps) {
       {plate.ground}
       <rect width={PLATE_WIDTH} height={PLATE_HEIGHT} fill={`url(#${gridId})`} mask={`url(#${landId})`} />
       {plate.lines}
+      {story && <g mask={`url(#${streetsId})`}>{storyOverlay(story, plate.core)}</g>}
+      {/* Labels sit above the streets with a paper-coloured halo, the usual
+          cartographic trick for keeping names legible over linework. */}
       {plate.labels.map((label) => (
         <text
           key={`${label.x}-${label.y}`}
@@ -664,6 +667,10 @@ export function LandPlateArt({ land, story, placeName }: LandPlateArtProps) {
           textAnchor={label.anchor ?? "middle"}
           transform={label.rotate ? `rotate(${label.rotate} ${label.x} ${label.y})` : undefined}
           fill={C.deepWater}
+          stroke={C.parchment}
+          strokeWidth={3}
+          strokeLinejoin="round"
+          paintOrder="stroke"
           style={{ fontFamily: "var(--font-display)" }}
           fontStyle="italic"
           fontSize={label.size === "sm" ? 12 : 15}
@@ -673,7 +680,6 @@ export function LandPlateArt({ land, story, placeName }: LandPlateArtProps) {
           {label.text(stem)}
         </text>
       ))}
-      {story && <g mask={`url(#${streetsId})`}>{storyOverlay(story, plate.core)}</g>}
     </>
   );
 }
