@@ -162,7 +162,7 @@ def island_mask(
     # ── Spine of lobes ──
     cx = cy = ts * 1.5  # world center (middle of tile 1, 1)
     spine_angle = _seeded_hash(seed, 1) * math.pi
-    spine_len = ts * (0.9 + _seeded_hash(seed, 2) * 0.8)  # 0.9 - 1.7 tiles
+    spine_len = ts * (1.0 + _seeded_hash(seed, 2) * 0.7)  # 1.0 - 1.7 tiles
     spine_bend = (_seeded_hash(seed, 3) - 0.5) * ts * 0.8
     num_lobes = 2 + int(_seeded_hash(seed, 4) * 3)  # 2 - 4
     ax_x, ax_y = math.cos(spine_angle), math.sin(spine_angle)
@@ -177,8 +177,8 @@ def island_mask(
         lx = cx + ax_x * u * spine_len + perp_x * bend
         ly = cy + ax_y * u * spine_len + perp_y * bend
         # Lobes are ellipses stretched along the spine
-        r_long = ts * (0.38 + _seeded_hash(seed, 50 + i) * 0.30)
-        r_short = r_long * (0.55 + _seeded_hash(seed, 60 + i) * 0.35)
+        r_long = ts * (0.58 + _seeded_hash(seed, 50 + i) * 0.36)
+        r_short = r_long * (0.70 + _seeded_hash(seed, 60 + i) * 0.30)
         dx = wx - lx
         dy = wy - ly
         along = (dx * ax_x + dy * ax_y) / r_long
@@ -209,6 +209,12 @@ def island_mask(
     # heightfield adds fine fractal roughness to the shoreline.
     coast_noise = _fbm_grid(xs, ys, seed + 3, 1.0 / (ts * 0.30), octaves=3)
     field = shape + coast_noise * 0.28 + (heightfield - 0.5) * 0.20
+
+    # Fade the field out near the 3x3 world boundary so the island is
+    # always surrounded by open water, however far a lobe reaches.
+    margin = ts * 0.35
+    edge_dist = np.minimum.reduce([xx, yy, 3.0 * ts - xx, 3.0 * ts - yy])
+    field = field * _smoothstep(edge_dist / margin)
 
     # Land where field > threshold; narrow band so the coast is crisp
     threshold = 0.42

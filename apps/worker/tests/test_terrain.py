@@ -2088,6 +2088,25 @@ class TestIslandMask:
                     f"seed {seed}: world corner ({tx},{ty}) is land"
                 )
 
+    def test_island_land_fraction(self):
+        """Islands should cover a usable share of the world (CITY-648 review)."""
+        import numpy as np
+        from city_worker.terrain.geographic_masks import MaskContext, island_mask
+
+        hf = np.full((32, 32), 0.5)
+        fractions = []
+        for seed in range(20):
+            world = np.block([
+                [
+                    island_mask(hf, MaskContext(tx=tx, ty=ty, tile_size=500.0, resolution=32, seed=seed))
+                    for tx in range(3)
+                ]
+                for ty in range(3)
+            ])
+            fractions.append((world > 0.42).mean())
+        assert 0.3 <= np.mean(fractions) <= 0.55, f"mean land fraction {np.mean(fractions):.2f}"
+        assert min(fractions) >= 0.15, f"smallest island {min(fractions):.2f} too small"
+
     def test_interior_lifted_above_water(self):
         """Low interior terrain must not dip below water (no inland puddles)."""
         import numpy as np
