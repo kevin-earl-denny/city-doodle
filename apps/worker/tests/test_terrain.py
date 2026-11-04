@@ -425,11 +425,13 @@ class TestNoisyCoastline:
         from city_worker.terrain.water import denoise_water_mask
 
         mask = np.zeros((128, 128), dtype=bool)
-        mask[60:62, 0:2] = True  # tiny, but touches the tile edge
-        mask[60:62, 60:62] = True  # tiny and interior
+        mask[40:43, 0:4] = True  # 12 cells at the edge: may continue next door
+        mask[80:82, 0:2] = True  # 4-cell speck at the edge: noise
+        mask[60:63, 60:64] = True  # same 12 cells, but interior: noise
         cleaned = denoise_water_mask(mask)
-        assert cleaned[60:62, 0:2].all()
-        assert not cleaned[60:62, 60:62].any()
+        assert cleaned[40:43, 0:4].all()
+        assert not cleaned[80:82, 0:2].any()
+        assert not cleaned[60:63, 60:64].any()
 
     def test_bays_capped_per_tile(self):
         kwargs = dict(
