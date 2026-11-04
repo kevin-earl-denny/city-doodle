@@ -1,6 +1,7 @@
 """Application configuration."""
 
 import json
+from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,6 +22,14 @@ class Settings(BaseSettings):
 
     # Auth mode: "dev" uses X-User-Id header, "production" uses Bearer token
     auth_mode: str = "dev"
+
+    # World Brief (AI terrain prompt, CITY-659). Endpoint returns 503 when unset.
+    anthropic_api_key: str | None = None
+    brief_model: str = "claude-opus-5-5"
+    brief_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    brief_rate_limit_per_minute: int = 8
+    brief_daily_limit_per_user: int = 60
+    brief_global_limit_per_minute: int = 60
 
     # CORS configuration
     frontend_url: str = "http://localhost:5173"

@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError, DataError, IntegrityError, OperationalErr
 from city_api.config import settings
 from city_api.routers import auth_router
 from city_api.routes import (
+    brief_router,
     cities_router,
     city_limits_router,
     districts_router,
@@ -60,6 +61,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.include_router(auth_router)
 app.include_router(cities_router)
 app.include_router(city_limits_router)
+app.include_router(brief_router)
 app.include_router(worlds_router)
 app.include_router(tiles_router)
 app.include_router(locks_router)
