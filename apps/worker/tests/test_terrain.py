@@ -87,6 +87,22 @@ class TestHeightfieldGeneration:
         assert heightfield.min() >= 0.0
         assert heightfield.max() <= 1.0
 
+    def test_heightfield_is_smooth_not_aliased(self):
+        """Neighboring samples should be strongly correlated (CITY-650).
+
+        Includes an over-limit scale (the pre-CITY-650 value), which must be
+        clamped rather than aliasing into per-sample speckle.
+        """
+        # White noise is ~0; the unclamped 0.3143 measured 0.13.
+        for scale, min_lag1 in ((0.01, 0.95), (0.3143, 0.7)):
+            h = generate_heightfield(
+                seed=42, tx=1, ty=1, tile_size=256.0, resolution=128, scale=scale
+            )
+            a = h[:, :-1].ravel() - h.mean()
+            b = h[:, 1:].ravel() - h.mean()
+            lag1 = (a * b).mean() / (a.std() * b.std())
+            assert lag1 > min_lag1, f"scale={scale}: lag-1 autocorrelation {lag1:.2f}"
+
     def test_heightfield_deterministic(self):
         """Same parameters should produce identical heightfields."""
         h1 = generate_heightfield(seed=42, tx=5, ty=3, tile_size=1000.0, resolution=32)
