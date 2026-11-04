@@ -1,54 +1,31 @@
 ## Summary
 
-<!-- Brief description of the changes. Link to the ticket. -->
-
-Closes #<!-- ticket number -->
+<!-- What this changes and why, in a few sentences. Title must be `CITY-<n>: <summary>`. -->
 
 ## Changes
 
-<!-- Bullet points of what changed -->
+<!-- Bullet points of what changed. -->
 
 -
 
-## Testing
+## Verification
 
-### Automated Tests
+<!-- What you actually ran and the results (tests, commands, screenshots, prod checks).
+     Merging is Deployed, not Done: say how the ticket's acceptance criteria will be checked in the running app. -->
 
-<!-- Describe any new or modified tests -->
+## Gotchas
 
-- [ ] Unit tests added/updated
-- [ ] Integration tests added/updated
-- [ ] E2E tests added/updated
+<!-- Anything surprising a future agent should know, or "None". -->
 
-### Manual Testing Instructions
+## Secrets
 
-<!--
-Provide step-by-step instructions for a non-technical reviewer.
-Assume they have never seen this feature before.
--->
+<!-- New or changed env vars and where each is set (Fly app, Vercel, GitHub secret), or "None". -->
 
-1.
-2.
-3.
+## Cleanup
 
-### Expected Behavior
+<!-- Cloud resources created and deleted (Neon branches, Fly machines, containers), or "None". -->
 
-<!-- What should the reviewer observe when testing? -->
+Linear: CITY-<n>
 
-## Acceptance Criteria
-
-<!-- From the ticket - check off what's complete -->
-
-- [ ]
-- [ ]
-
-## Screenshots
-
-<!-- If applicable, add screenshots to demonstrate UI changes -->
-
-## Checklist
-
-- [ ] Code follows project conventions
-- [ ] No secrets or credentials committed
-- [ ] Documentation updated (if needed)
-- [ ] PR title includes ticket reference
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+<!-- Last line must be the author marker: city-author session=<your session name> (bin/vibe pr adds it) -->
