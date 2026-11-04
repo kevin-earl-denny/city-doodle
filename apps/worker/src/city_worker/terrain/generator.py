@@ -6,9 +6,15 @@ from typing import Any
 
 import numpy as np
 
+from city_worker.terrain.barrier_islands import (
+    BarrierIslandConfig,
+    extract_barrier_islands,
+)
 from city_worker.terrain.bays import BayConfig, extract_bays
 from city_worker.terrain.clip import clip_features_to_tile
 from city_worker.terrain.contours import extract_contours, pad_heightfield_for_contours
+from city_worker.terrain.delta_network import delta_front_features, delta_river_features
+from city_worker.terrain.deltas import extract_deltas
 from city_worker.terrain.geographic_masks import apply_geographic_mask
 from city_worker.terrain.noise import apply_erosion, generate_heightfield
 from city_worker.terrain.types import (
@@ -17,11 +23,6 @@ from city_worker.terrain.types import (
     TerrainResult,
     TileTerrainData,
 )
-from city_worker.terrain.barrier_islands import (
-    BarrierIslandConfig,
-    extract_barrier_islands,
-)
-from city_worker.terrain.deltas import extract_deltas
 from city_worker.terrain.water import (
     calculate_flow_accumulation,
     extract_beaches,
@@ -61,9 +62,19 @@ class TerrainGenerator:
 
         # Phase names used for aggregated timing summary
         phase_names = [
-            "heightfield", "mask", "erosion", "flow", "coastlines",
-            "bays", "barriers", "rivers", "deltas", "lakes", "beaches",
-            "contours", "clip",
+            "heightfield",
+            "mask",
+            "erosion",
+            "flow",
+            "coastlines",
+            "bays",
+            "barriers",
+            "rivers",
+            "deltas",
+            "lakes",
+            "beaches",
+            "contours",
+            "clip",
         ]
         phase_totals = {name: 0.0 for name in phase_names}
 
@@ -112,7 +123,10 @@ class TerrainGenerator:
         timing_parts = " ".join(f"{name}={phase_totals[name]:.1f}s" for name in phase_names)
         logger.info(
             "[Terrain] Generated 3x3 in %.1fs (%s) setting=%s features=%d",
-            total_s, timing_parts, self.config.geographic_setting, total_features,
+            total_s,
+            timing_parts,
+            self.config.geographic_setting,
+            total_features,
         )
 
         return TerrainResult(center=center_data, neighbors=tiles)
@@ -151,6 +165,7 @@ class TerrainGenerator:
             tile_size=cfg.tile_size,
             resolution=cfg.resolution,
             seed=cfg.world_seed,
+            water_level=cfg.water_level,
         )
 
         t_mask = time.perf_counter()
@@ -214,6 +229,7 @@ class TerrainGenerator:
             for f in bays:
                 if f.type == "bay":
                     from shapely.geometry import shape as _shape
+
                     bay_polygons.append(_shape(f.geometry))
 
         t_bays = time.perf_counter()
@@ -245,6 +261,7 @@ class TerrainGenerator:
             for f in barrier_islands:
                 if f.type == "lagoon":
                     from shapely.geometry import shape
+
                     lagoon_polygons.append(shape(f.geometry))
 
         t_barriers = time.perf_counter()
@@ -254,6 +271,7 @@ class TerrainGenerator:
         for f in coastlines:
             if f.type == "coastline":
                 from shapely.geometry import shape as _shape_coast
+
                 coastline_polys.append(_shape_coast(f.geometry))
 
         # Rivers (moved before beaches so river geometries can be used
@@ -261,7 +279,12 @@ class TerrainGenerator:
         # CITY-551: Skip river extraction when water_level is very low
         # (e.g. inland preset) to prevent stray water features.
         rivers: list[TerrainFeature] = []
-        if cfg.water_level >= WATER_LEVEL_SUPPRESS_THRESHOLD:
+        is_delta = cfg.geographic_setting == "delta"
+        if is_delta:
+            # CITY-697: delta worlds use the seeded trunk + distributary
+            # network instead of flow-traced rivers on noise.
+            rivers = delta_river_features(cfg.world_seed, tx, ty, cfg.tile_size)
+        elif cfg.water_level >= WATER_LEVEL_SUPPRESS_THRESHOLD:
             rivers = extract_rivers(
                 heightfield=heightfield,
                 water_level=cfg.water_level,
@@ -279,23 +302,28 @@ class TerrainGenerator:
         river_lines: list = []
         for f in rivers:
             from shapely.geometry import shape as _shape
+
             river_lines.append(_shape(f.geometry))
 
         t_rivers = time.perf_counter()
 
         # River deltas and estuaries (CITY-179)
-        delta_seed = abs(cfg.world_seed ^ (tx * 8311 + ty * 8317))
-        deltas = extract_deltas(
-            rivers=rivers,
-            heightfield=heightfield,
-            water_level=cfg.water_level,
-            flow_accumulation=flow_accumulation,
-            tile_x=tx,
-            tile_y=ty,
-            tile_size=cfg.tile_size,
-            seed=delta_seed,
-            min_flow=cfg.resolution * 0.4,  # Lower threshold than rivers
-        )
+        if is_delta:
+            # CITY-697: tidal flats fringing the delta front (clipped below)
+            deltas = delta_front_features(cfg.world_seed, cfg.tile_size)
+        else:
+            delta_seed = abs(cfg.world_seed ^ (tx * 8311 + ty * 8317))
+            deltas = extract_deltas(
+                rivers=rivers,
+                heightfield=heightfield,
+                water_level=cfg.water_level,
+                flow_accumulation=flow_accumulation,
+                tile_x=tx,
+                tile_y=ty,
+                tile_size=cfg.tile_size,
+                seed=delta_seed,
+                min_flow=cfg.resolution * 0.4,  # Lower threshold than rivers
+            )
         features.extend(deltas)
 
         t_deltas = time.perf_counter()
@@ -320,6 +348,7 @@ class TerrainGenerator:
         lake_polygons: list = []
         for f in lakes:
             from shapely.geometry import shape as _shape
+
             lake_polygons.append(_shape(f.geometry))
 
         t_lakes = time.perf_counter()
@@ -375,7 +404,11 @@ class TerrainGenerator:
         timing_parts = " ".join(f"{k}={v:.1f}s" for k, v in timings.items())
         logger.info(
             "[Terrain] Tile (%d, %d) in %.1fs (%s) features=%d",
-            tx, ty, total_s, timing_parts, len(features),
+            tx,
+            ty,
+            total_s,
+            timing_parts,
+            len(features),
         )
 
         tile_data = TileTerrainData(
