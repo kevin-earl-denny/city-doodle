@@ -108,3 +108,10 @@ async def test_retry_scheduled_event(events):
     assert retry["retry_count"] == 1
     assert retry["retry_delay_s"] == 30
     assert observability.get_log_context() == {}
+
+
+def test_worker_engine_hides_sql_parameters():
+    """CITY-642 review: bound SQL parameters must not reach logs (or Axiom)."""
+    from city_worker.database import engine
+
+    assert engine.sync_engine.hide_parameters is True

@@ -275,3 +275,93 @@ def test_request_id_from(header, kept):
     rid = obs.request_id_from(header)
     assert (rid == header) is kept
     assert obs.REQUEST_ID_PATTERN.fullmatch(rid)
+
+
+# --- review fixups: per-record encoding, drop reports, shutdown budget, httpx -------
+
+
+class _Unprintable:
+    def __str__(self):
+        raise RuntimeError("no str for you")
+
+    __repr__ = __str__
+
+
+def test_one_unserialisable_record_does_not_drop_its_batch(collector, capsys):
+    handler_cls, base = collector
+    shipper = obs.AxiomShipper("xaat-test", "ds", url=f"{base}/ingest")
+    batch = [{"n": 1}, {"n": 2, "bad": _Unprintable()}, {"n": 3}]
+    assert shipper.ship(batch) is True
+    (request,) = handler_cls.received
+    assert [e["n"] for e in request["body"]] == [1, 3]
+    assert shipper.failed_records == 1
+    assert "failed to ship 1 log record(s)" in capsys.readouterr().err
+
+
+def test_queue_full_drops_are_reported_while_healthy(capsys):
+    shipper = obs.AxiomShipper("xaat-test", "ds", url="http://127.0.0.1:9/", max_queue=1)
+    for i in range(3):
+        shipper.submit({"n": i})
+    shipper._maybe_report_drops()
+    assert "dropped 2 record(s)" in capsys.readouterr().err
+    # Rate-limited: more drops right away are counted but not re-reported yet.
+    shipper.submit({"n": 4})
+    shipper._maybe_report_drops()
+    assert capsys.readouterr().err == ""
+    assert shipper.dropped_records == 3
+
+
+def test_drain_thread_reports_drops_after_a_successful_batch(collector, capsys):
+    handler_cls, base = collector
+    shipper = obs.AxiomShipper("xaat-test", "ds", url=f"{base}/ingest", max_queue=1)
+    for i in range(4):
+        shipper.submit({"n": i})  # 1 queued, 3 dropped before the thread starts
+    shipper.start()
+    assert shipper.flush(5)
+    shipper.stop()
+    assert len(handler_cls.received) == 1 and shipper.failed_records == 0
+    assert "dropped 3 record(s)" in capsys.readouterr().err
+
+
+@pytest.fixture
+def hanging_axiom():
+    import time as _time
+    from http.server import ThreadingHTTPServer
+
+    class Hang(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - http.server API
+            _time.sleep(8)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Hang)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+    server.server_close()
+
+
+def test_shutdown_with_hung_axiom_stays_within_one_budget(clean_root, hanging_axiom, monkeypatch):
+    import time as _time
+
+    monkeypatch.setattr(obs, "AXIOM_INGEST_URL", hanging_axiom + "/{dataset}/ingest")
+    assert obs.configure_axiom_logging(service="api", app_env="production", api_token="xaat-t")
+    logging.getLogger("test.hang").warning("this ingest will hang")
+    _time.sleep(0.2)  # let the drain thread pick it up and block on the POST
+    logging.getLogger("test.hang").warning("and this one waits behind it")
+    start = _time.monotonic()
+    obs.shutdown_axiom_logging()
+    elapsed = _time.monotonic() - start
+    assert elapsed < obs.SHUTDOWN_TIMEOUT_S + 0.5, elapsed
+    assert obs.current_shipper() is None
+
+
+def test_configure_holds_httpx_at_warning(clean_root):
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.NOTSET)
+    obs.configure_axiom_logging(service="api", app_env="production", api_token="xaat-t")
+    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpcore").level == logging.WARNING

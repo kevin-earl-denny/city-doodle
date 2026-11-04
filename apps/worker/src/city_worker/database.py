@@ -22,6 +22,9 @@ engine = create_async_engine(
     max_overflow=1,
     pool_recycle=300,
     pool_pre_ping=True,
+    # CITY-642: keep bound SQL parameters out of exception text, which is logged
+    # and may ship to Axiom.
+    hide_parameters=True,
 )
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

@@ -53,10 +53,12 @@ QUEUE_MAX_RECORDS = 10_000
 MAX_BATCH = 500
 FLUSH_INTERVAL_S = 1.0
 INGEST_TIMEOUT_S = 10.0
-# The most stopping the drain thread may take at process exit.
+# Total time process exit may spend flushing and stopping the drain thread, shared by
+# both steps. Fly's default kill_timeout is 5 s; past this the remaining records are
+# abandoned rather than having the machine SIGKILLed mid-exit.
 SHUTDOWN_TIMEOUT_S = 3.0
-# Shipping failures are reported to stderr at most this often, so an outage does not
-# turn into a stderr line per batch.
+# Shipping failures and queue-full drops are each reported to stderr at most this
+# often, so an outage or a burst does not turn into a stderr line per batch.
 FAILURE_REPORT_INTERVAL_S = 60.0
 
 # An inbound X-Request-ID is caller-controlled and written into every line for the
@@ -182,6 +184,8 @@ class AxiomShipper:
         self.dropped_records = 0
         self.last_failure: str | None = None
         self._last_report = 0.0
+        self._last_drop_report = 0.0
+        self._dropped_reported = 0
         self._thread: threading.Thread | None = None
 
     # -- producer side (any thread; must never block or raise) --------------------
@@ -226,15 +230,28 @@ class AxiomShipper:
                     break
                 batch.append(nxt)
             self.ship(batch)
+            self._maybe_report_drops()
             for _ in batch:
                 self.queue.task_done()
             if stop:
                 return
 
     def ship(self, batch: list[dict[str, Any]]) -> bool:
-        """POST one batch. Never raises; returns whether Axiom accepted it."""
+        """POST one batch. Never raises; returns whether Axiom accepted it.
+
+        Records are encoded one by one so a single unserialisable record is dropped
+        and counted on its own instead of taking the rest of the batch with it.
+        """
+        encoded: list[str] = []
+        for event in batch:
+            try:
+                encoded.append(json.dumps(event, default=str))
+            except Exception as exc:  # noqa: BLE001 - e.g. a value whose __str__ raises
+                self._record_failure(1, exc)
+        if not encoded:
+            return False
         try:
-            body = json.dumps(batch, default=str).encode("utf-8")
+            body = ("[" + ",".join(encoded) + "]").encode("utf-8")
             headers = {
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
@@ -246,7 +263,7 @@ class AxiomShipper:
                 resp.read()
             return True
         except Exception as exc:  # noqa: BLE001 - Axiom being down must not break the app
-            self._record_failure(len(batch), exc)
+            self._record_failure(len(encoded), exc)
             return False
 
     def _record_failure(self, n: int, exc: BaseException) -> None:
@@ -261,15 +278,29 @@ class AxiomShipper:
                 self._last_report = now
             failed, dropped = self.failed_records, self.dropped_records
         if report:
-            try:
-                print(
-                    f"[axiom] failed to ship {n} log record(s) to {self.dataset}: "
-                    f"{type(exc).__name__}: {exc} (failed so far: {failed}, dropped: {dropped})",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            except Exception:  # noqa: BLE001 - stderr itself may be gone at exit
-                pass
+            _stderr(
+                f"[axiom] failed to ship {n} log record(s) to {self.dataset}: "
+                f"{type(exc).__name__}: {exc} (failed so far: {failed}, dropped: {dropped})"
+            )
+
+    def _maybe_report_drops(self) -> None:
+        """Report queue-full drops even while shipping succeeds (rate-limited)."""
+        with self._lock:
+            dropped = self.dropped_records
+            new = dropped - self._dropped_reported
+            now = time.monotonic()
+            due = (
+                self._last_drop_report == 0.0
+                or now - self._last_drop_report >= FAILURE_REPORT_INTERVAL_S
+            )
+            if not (new > 0 and due):
+                return
+            self._dropped_reported = dropped
+            self._last_drop_report = now
+        _stderr(
+            f"[axiom] log queue full: dropped {new} record(s) for {self.dataset} "
+            f"(dropped so far: {dropped})"
+        )
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -285,17 +316,28 @@ class AxiomShipper:
         return True
 
     def stop(self, timeout_s: float = SHUTDOWN_TIMEOUT_S) -> None:
+        """Signal the drain thread to exit and wait for it, within ``timeout_s`` in total.
+
+        Past the deadline the daemon thread is abandoned with whatever it still holds.
+        """
         thread = self._thread
         if thread is None:
             return
-        deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + max(0.0, timeout_s)
         try:
-            self.queue.put(self._STOP, timeout=timeout_s)
+            self.queue.put(self._STOP, timeout=max(0.0, timeout_s))
         except queue.Full:
-            print("[axiom] log queue still full at shutdown; abandoning it", file=sys.stderr)
+            _stderr("[axiom] log queue still full at shutdown; abandoning it")
         else:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
         self._thread = None
+
+
+def _stderr(message: str) -> None:
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001 - stderr itself may be gone at exit
+        pass
 
 
 class AxiomHandler(logging.Handler):
@@ -386,6 +428,13 @@ def configure_axiom_logging(
                 lg.addHandler(handler)
                 _installed.append((lg, handler))
 
+        # httpx logs every request URL at INFO; with root lowered to INFO those lines
+        # would ship. Hold them at WARNING unless something configured them already.
+        for name in ("httpx", "httpcore"):
+            lib_logger = logging.getLogger(name)
+            if lib_logger.level == logging.NOTSET:
+                lib_logger.setLevel(logging.WARNING)
+
         shipper.start()
         _shipper = shipper
     except Exception as exc:  # noqa: BLE001 - observability setup must not stop startup
@@ -396,11 +445,16 @@ def configure_axiom_logging(
 
 
 def shutdown_axiom_logging() -> None:
-    """Flush briefly, stop the drain thread and detach only the handlers we installed."""
+    """Flush, stop the drain thread and detach only the handlers we installed.
+
+    Flush and stop share one ``SHUTDOWN_TIMEOUT_S`` budget, so a hung Axiom delays
+    process exit by at most that long in total.
+    """
     global _shipper
     if _shipper is not None:
+        deadline = time.monotonic() + SHUTDOWN_TIMEOUT_S
         _shipper.flush(SHUTDOWN_TIMEOUT_S)
-        _shipper.stop()
+        _shipper.stop(deadline - time.monotonic())
         _shipper = None
     while _installed:
         lg, handler = _installed.pop()

@@ -161,3 +161,78 @@ async def test_request_line_ships_with_request_id_in_axiom_event(captured):
     assert event["route"] == "/items/{item_id}"
     assert event["status"] == 200
     assert event["service"] == "api"
+
+
+# --- CITY-642 review: no secrets/PII in handler log lines -------------------------
+
+_EMAIL = "victim@example.com"
+_TOKEN = "sess-secret-token-123"
+_ORIG_MSG = (
+    "<class 'asyncpg.exceptions.UniqueViolationError'>: duplicate key value violates "
+    'unique constraint "users_email_key"\n'
+    f"DETAIL:  Key (email)=({_EMAIL}) already exists."
+)
+
+
+def _request_with_query():
+    from fastapi import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/auth/register",
+            "query_string": f"token={_TOKEN}".encode(),
+            "headers": [(b"host", b"testserver")],
+            "server": ("testserver", 80),
+            "scheme": "http",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_integrity_handler_logs_path_without_query_or_row_values(caplog):
+    from sqlalchemy.exc import IntegrityError
+
+    from city_api.main import integrity_error_handler
+
+    exc = IntegrityError("INSERT INTO users ...", {"email": _EMAIL}, Exception(_ORIG_MSG))
+    with caplog.at_level(logging.WARNING, logger="city_api.main"):
+        response = await integrity_error_handler(_request_with_query(), exc)
+    assert response.status_code == 409
+    text = caplog.text
+    assert "/auth/register" in text
+    assert "users_email_key" in text
+    assert _TOKEN not in text and "token=" not in text
+    assert _EMAIL not in text
+
+
+@pytest.mark.asyncio
+async def test_dbapi_handler_hides_parameters_and_detail(caplog):
+    from sqlalchemy.exc import DBAPIError
+
+    from city_api.main import dbapi_error_handler
+
+    # What SQLAlchemy raises for an engine created with hide_parameters=True.
+    exc = DBAPIError.instance(
+        "SELECT * FROM sessions WHERE token = $1",
+        (_TOKEN,),
+        Exception(_ORIG_MSG),
+        Exception,
+        hide_parameters=True,
+    )
+    try:
+        raise exc
+    except DBAPIError:
+        with caplog.at_level(logging.ERROR, logger="city_api.main"):
+            response = await dbapi_error_handler(_request_with_query(), exc)
+    assert response.status_code == 503
+    assert _TOKEN not in caplog.text
+    assert _EMAIL not in caplog.text
+    assert "SQL parameters hidden" in caplog.text
+
+
+def test_api_engine_hides_sql_parameters():
+    from city_api.database import get_engine
+
+    assert get_engine().sync_engine.hide_parameters is True

@@ -108,6 +108,18 @@ async def health():
     return {"status": "healthy"}
 
 
+# CITY-642: these handler lines can ship to Axiom, a durable, queryable store. So
+# they log the path (never the query string) and drop Postgres DETAIL lines, which
+# echo row values such as `Key (email)=(...) already exists`. SQL parameters are
+# kept out by `hide_parameters=True` on the engine (city_api.database).
+_DETAIL_LINE = re.compile(r"^\s*DETAIL:.*$\n?", re.MULTILINE)
+
+
+def _redact_db_text(text: object) -> str:
+    """Drop Postgres DETAIL lines (they carry row values) from an error/traceback string."""
+    return _DETAIL_LINE.sub("", str(text))
+
+
 @app.exception_handler(IntegrityError)
 async def integrity_error_handler(request: Request, exc: IntegrityError):
     """Handle database integrity errors (unique constraint, foreign key violations).
@@ -115,7 +127,8 @@ async def integrity_error_handler(request: Request, exc: IntegrityError):
     Returns 409 Conflict for constraint violations.
     """
     logger.warning(
-        f"Database integrity error on {request.method} {request.url}: {exc.orig}"
+        f"Database integrity error on {request.method} {request.url.path}: "
+        f"{_redact_db_text(exc.orig)}"
     )
     # Extract useful error message from the exception
     error_msg = str(exc.orig) if exc.orig else str(exc)
@@ -141,8 +154,8 @@ async def operational_error_handler(request: Request, exc: OperationalError):
     Returns 503 Service Unavailable for database connectivity issues.
     """
     logger.error(
-        f"Database operational error on {request.method} {request.url}: {exc}\n"
-        f"{traceback.format_exc()}"
+        f"Database operational error on {request.method} {request.url.path}: "
+        f"{_redact_db_text(exc)}\n{_redact_db_text(traceback.format_exc())}"
     )
     return JSONResponse(
         status_code=503,
@@ -160,7 +173,8 @@ async def data_error_handler(request: Request, exc: DataError):
     Returns 400 Bad Request for invalid data.
     """
     logger.warning(
-        f"Database data error on {request.method} {request.url}: {exc.orig}"
+        f"Database data error on {request.method} {request.url.path}: "
+        f"{_redact_db_text(exc.orig)}"
     )
     return JSONResponse(
         status_code=400,
@@ -180,7 +194,7 @@ async def validation_error_handler(request: Request, exc: ValidationError):
     in repository/service layer code.
     """
     logger.warning(
-        f"Validation error on {request.method} {request.url}: {exc}"
+        f"Validation error on {request.method} {request.url.path}: {exc}"
     )
     return JSONResponse(
         status_code=422,
@@ -201,8 +215,8 @@ async def dbapi_error_handler(request: Request, exc: DBAPIError):
     database is temporarily unavailable.
     """
     logger.error(
-        f"Database DBAPI error on {request.method} {request.url}: {exc}\n"
-        f"{traceback.format_exc()}"
+        f"Database DBAPI error on {request.method} {request.url.path}: "
+        f"{_redact_db_text(exc)}\n{_redact_db_text(traceback.format_exc())}"
     )
     return JSONResponse(
         status_code=503,
@@ -242,8 +256,8 @@ async def global_exception_handler(request: Request, exc: Exception):
     opaque "Failed to fetch" CORS errors.
     """
     logger.error(
-        f"Unhandled exception on {request.method} {request.url}: {exc}\n"
-        f"{traceback.format_exc()}"
+        f"Unhandled exception on {request.method} {request.url.path}: "
+        f"{_redact_db_text(exc)}\n{_redact_db_text(traceback.format_exc())}"
     )
     response = JSONResponse(
         status_code=500,

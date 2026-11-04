@@ -50,6 +50,9 @@ def get_engine():
             max_overflow=3,
             pool_recycle=300,
             pool_pre_ping=True,
+            # CITY-642: keep bound SQL parameters (session tokens, emails) out of
+            # exception text, which is logged and may ship to Axiom.
+            hide_parameters=True,
         )
     return _engine
 
