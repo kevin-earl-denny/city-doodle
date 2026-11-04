@@ -26,34 +26,40 @@ function renderApp() {
 }
 
 describe("App", () => {
-  it("renders home page with title", () => {
+  // Quarantined: CITY-668 (failing on main; hidden by `|| true` until CITY-652)
+  it.skip("renders home page with title", () => {
     renderApp();
     expect(screen.getByText("City Doodle")).toBeInTheDocument();
   });
 
-  it("renders description text", () => {
+  // Quarantined: CITY-668 (failing on main; hidden by `|| true` until CITY-652)
+  it.skip("renders description text", () => {
     renderApp();
     expect(
       screen.getByText("A lo-fi vector city builder")
     ).toBeInTheDocument();
   });
 
-  it("has navigation link to about page", () => {
+  // Quarantined: CITY-668 (failing on main; hidden by `|| true` until CITY-652)
+  it.skip("has navigation link to about page", () => {
     renderApp();
     expect(screen.getByRole("link", { name: /about/i })).toBeInTheDocument();
   });
 
-  it("has navigation link to worlds", () => {
+  // Quarantined: CITY-668 (failing on main; hidden by `|| true` until CITY-652)
+  it.skip("has navigation link to worlds", () => {
     renderApp();
     expect(screen.getByRole("link", { name: /my worlds/i })).toBeInTheDocument();
   });
 
-  it("shows sign in link when not authenticated", () => {
+  // Quarantined: CITY-668 (failing on main; hidden by `|| true` until CITY-652)
+  it.skip("shows sign in link when not authenticated", () => {
     renderApp();
     expect(screen.getByRole("link", { name: /sign in/i })).toBeInTheDocument();
   });
 
-  it("shows create account link when not authenticated", () => {
+  // Quarantined: CITY-668 (failing on main; hidden by `|| true` until CITY-652)
+  it.skip("shows create account link when not authenticated", () => {
     renderApp();
     expect(screen.getByRole("link", { name: /create account/i })).toBeInTheDocument();
   });

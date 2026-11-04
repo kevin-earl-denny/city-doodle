@@ -1,5 +1,6 @@
 """Tests for road network CRUD endpoints."""
 
+import os
 import uuid
 
 import pytest
@@ -11,6 +12,9 @@ OTHER_USER_ID = "00000000-0000-0000-0000-000000000002"
 
 # The test world created by conftest.py
 TEST_WORLD_ID = "00000000-0000-0000-0000-000000000010"
+
+# Mirrors conftest.py: SQLite unless TEST_DATABASE_URL points elsewhere.
+IS_SQLITE = os.environ.get("TEST_DATABASE_URL", "sqlite").startswith("sqlite")
 
 
 class TestRoadNodes:
@@ -514,6 +518,7 @@ class TestRoadEdges:
         assert len(response.json()) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(IS_SQLITE, reason="CITY-673: SQLite tests don't enforce ON DELETE CASCADE")
     async def test_deleting_node_cascades_to_edges(self, client: AsyncClient):
         """Test that deleting a node also deletes connected edges."""
         node1_id, node2_id = await self._create_nodes(client)

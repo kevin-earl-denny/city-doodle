@@ -1,6 +1,17 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render as rtlRender, screen, fireEvent } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi } from "vitest";
 import { TimelapseView } from "./TimelapseView";
+
+// The component reads from react-query, so every render needs a client.
+function render(ui: React.ReactElement) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return rtlRender(ui, {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
+  });
+}
 
 describe("TimelapseView", () => {
   it("renders children", () => {
@@ -95,7 +106,9 @@ describe("TimelapseView", () => {
         <div>Content</div>
       </TimelapseView>
     );
-    expect(screen.getByText("January 2020")).toBeInTheDocument();
+    // The start date is shown twice: in the current-date display (the
+    // scrubber starts at startDate) and as the timeline's start label.
+    expect(screen.getAllByText("January 2020")).toHaveLength(2);
     expect(screen.getByText("February 2026")).toBeInTheDocument();
   });
 

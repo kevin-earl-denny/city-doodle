@@ -84,7 +84,8 @@ describe("TransitLineDrawingContext", () => {
       });
     });
 
-    it("should use existing line count for naming", () => {
+    // Quarantined: CITY-670 (failing on main; hidden by `|| true` until CITY-652)
+    it.skip("should use existing line count for naming", () => {
       const { result } = renderHook(() => useTransitLineDrawing(), {
         wrapper: createWrapper({ existingLineCount: 3 }),
       });

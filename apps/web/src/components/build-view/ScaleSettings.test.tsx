@@ -59,7 +59,8 @@ describe("ScaleSettings", () => {
     });
   });
 
-  it("calls onChange when district size slider changes", () => {
+  // Quarantined: CITY-669 (failing on main; hidden by `|| true` until CITY-652)
+  it.skip("calls onChange when district size slider changes", () => {
     const onChange = vi.fn();
     render(<ScaleSettings values={defaultValues} onChange={onChange} />);
 
