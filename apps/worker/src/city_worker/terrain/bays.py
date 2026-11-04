@@ -242,9 +242,7 @@ def extract_bays(
         if is_river_mouth:
             properties["flow_accumulation"] = flow_at_mouth
 
-        features.append(
-            TerrainFeature(type="bay", geometry=mapping(poly), properties=properties)
-        )
+        features.append(TerrainFeature(type="bay", geometry=mapping(poly), properties=properties))
 
     # Stable sort keeps label order among equal areas (determinism)
     features.sort(key=lambda f: f.properties["area"], reverse=True)
