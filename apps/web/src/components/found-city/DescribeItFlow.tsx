@@ -23,7 +23,18 @@ import { SurveyStep } from "./steps/SurveyStep";
 const STEP_LABELS = ["Describe", "Read the survey", "Found it"];
 
 function toBriefError(err: unknown): BriefError {
-  if (err instanceof ApiClientError) return { message: err.message, status: err.status };
+  if (err instanceof ApiClientError) {
+    // A 422 whose detail is a list is request validation, not a refusal. Its
+    // messages are developer-facing, so swap in player copy.
+    const body = err.detail as { detail?: unknown } | undefined;
+    if (err.status === 422 && Array.isArray(body?.detail)) {
+      return {
+        message: "That survey got too tangled to tweak. Try describing the land again.",
+        status: err.status,
+      };
+    }
+    return { message: err.message, status: err.status };
+  }
   if (err instanceof Error) return { message: err.message };
   return { message: "The surveyor couldn't read that. Please try again." };
 }

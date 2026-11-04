@@ -234,6 +234,21 @@ describe("Describe it", () => {
     expect(screen.getByRole("heading", { name: "Where does your city begin?" })).toBeInTheDocument();
   });
 
+  it("shows player copy for a validation 422 instead of a status code", async () => {
+    requestBrief.mockRejectedValueOnce(
+      new ApiClientError("previous brief has an oversized field", 422, {
+        detail: [{ loc: ["body"], msg: "Value error, previous brief has an oversized field", type: "value_error" }],
+      }),
+    );
+    renderModal();
+    fireEvent.change(screen.getByLabelText("Describe the land"), { target: { value: PROMPT } });
+    fireEvent.click(screen.getByRole("button", { name: "Survey it" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("too tangled to tweak");
+    expect(alert).not.toHaveTextContent("422");
+  });
+
   it("shows other errors without the fallback", async () => {
     requestBrief.mockRejectedValueOnce(new ApiClientError("Too many surveys, try again in a minute.", 429));
     renderModal();

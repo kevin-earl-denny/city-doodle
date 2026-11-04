@@ -158,6 +158,10 @@ async function request<T>(
       const apiDetail = (detail as { detail: unknown }).detail;
       if (typeof apiDetail === "string") {
         errorMessage = apiDetail;
+      } else if (Array.isArray(apiDetail) && apiDetail.length > 0) {
+        // FastAPI validation errors: [{ loc, msg, type }, ...]
+        const first = apiDetail[0] as { msg?: unknown };
+        if (typeof first?.msg === "string") errorMessage = first.msg.replace(/^Value error, /, "");
       } else if (apiDetail && typeof apiDetail === "object" && "message" in apiDetail) {
         errorMessage = String((apiDetail as { message: unknown }).message);
       }
