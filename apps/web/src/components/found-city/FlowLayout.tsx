@@ -6,7 +6,6 @@
 
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowIcon, CheckIcon } from "./icons";
-import { CityLoader } from "../ui";
 
 export const FOCUS_RING =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-coast";
@@ -190,16 +189,12 @@ export function PrimaryButton({ children, pending = false, size = "normal", pend
         size === "large" ? "px-[26px] py-[13px]" : "px-[22px] py-3"
       } ${FOCUS_RING}`}
     >
-      {pending && pendingLabel ? (
+      {pending ? (
+        // Plain text: the animated CityLoader doesn't fit inside a pill button.
         <>
-          {pendingLabel}
+          {pendingLabel ?? "Founding…"}
           <span className="sr-only"> (working)</span>
         </>
-      ) : pending ? (
-        <span className="-my-6 flex h-[44px] items-center overflow-hidden [&>div]:py-0 [&_p]:hidden [&_svg]:h-10 [&_svg]:w-16">
-          <CityLoader variant="inline" message="Founding…" />
-          <span className="sr-only">Founding your city…</span>
-        </span>
       ) : (
         <>
           {children}

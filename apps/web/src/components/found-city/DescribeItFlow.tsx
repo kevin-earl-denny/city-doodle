@@ -14,7 +14,7 @@ import { generateCityName } from "../../utils";
 import { EXAMPLE_PROMPTS, PROMPT_MIN, shuffled } from "./describeOptions";
 import { FlowFooter, FlowForm, PillButton, PrimaryButton, RouteSteps } from "./FlowLayout";
 import type { FoundCityModeProps } from "./FoundCityModal";
-import { DiceFourIcon } from "./icons";
+import { DiceFourIcon, PencilIcon } from "./icons";
 import type { BriefError } from "./steps/BriefErrorNote";
 import { NameStep } from "./steps/NameStep";
 import { PromptStep } from "./steps/PromptStep";
@@ -163,7 +163,7 @@ export function DescribeItFlow({
                 Roll a prompt
               </PillButton>
             ) : step === 2 ? (
-              <PillButton variant="dashed" icon={<DiceFourIcon />} onClick={() => setStep(1)} disabled={busy}>
+              <PillButton icon={<PencilIcon color="var(--color-ink)" />} onClick={() => setStep(1)} disabled={busy}>
                 Edit prompt
               </PillButton>
             ) : (
