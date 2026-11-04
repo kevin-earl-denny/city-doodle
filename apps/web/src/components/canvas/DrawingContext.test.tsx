@@ -179,8 +179,7 @@ describe("DrawingContext", () => {
       expect(context!.state.vertices.length).toBe(1);
     });
 
-    // Quarantined: CITY-670 (failing on main; hidden by `|| true` until CITY-652)
-    it.skip("endFreehand completes and simplifies the path", () => {
+    it("endFreehand completes and simplifies the path", () => {
       const onComplete = vi.fn();
       let context: ReturnType<typeof useDrawing> | null = null;
 
@@ -208,9 +207,11 @@ describe("DrawingContext", () => {
         context!.endFreehand();
       });
 
+      // Third arg is the road class (CITY-418).
       expect(onComplete).toHaveBeenCalledWith(
         expect.any(Array),
-        "neighborhood"
+        "neighborhood",
+        "arterial"
       );
       expect(context!.state.isDrawing).toBe(false);
       expect(context!.state.isFreehandActive).toBe(false);
@@ -286,8 +287,7 @@ describe("DrawingContext", () => {
       expect(context!.state.vertices).toHaveLength(3);
     });
 
-    // Quarantined: CITY-670 (failing on main; hidden by `|| true` until CITY-652)
-    it.skip("completeDrawing returns polygon when valid", () => {
+    it("completeDrawing returns polygon when valid", () => {
       const onComplete = vi.fn();
       let context: ReturnType<typeof useDrawing> | null = null;
 
@@ -316,7 +316,10 @@ describe("DrawingContext", () => {
           { x: 100, y: 0 },
           { x: 50, y: 100 },
         ],
-        "cityLimits"
+        "cityLimits",
+        // Road class (CITY-418) and split target (CITY-565) are passed too.
+        "arterial",
+        null
       );
     });
 

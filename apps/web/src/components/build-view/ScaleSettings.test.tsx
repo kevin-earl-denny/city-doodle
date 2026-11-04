@@ -59,19 +59,19 @@ describe("ScaleSettings", () => {
     });
   });
 
-  // Quarantined: CITY-669 (failing on main; hidden by `|| true` until CITY-652)
-  it.skip("calls onChange when district size slider changes", () => {
+  it("calls onChange when district size slider changes", () => {
     const onChange = vi.fn();
     render(<ScaleSettings values={defaultValues} onChange={onChange} />);
 
     fireEvent.click(screen.getByText("City Scale"));
 
     const districtSlider = screen.getAllByRole("slider")[1];
-    fireEvent.change(districtSlider, { target: { value: "800" } });
+    // Range is 1000-6000 m in 200 m steps (CITY-220).
+    fireEvent.change(districtSlider, { target: { value: "4000" } });
 
     expect(onChange).toHaveBeenCalledWith({
       block_size_meters: 100,
-      district_size_meters: 800,
+      district_size_meters: 4000,
     });
   });
 
