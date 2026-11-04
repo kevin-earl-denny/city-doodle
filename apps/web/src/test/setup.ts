@@ -37,6 +37,9 @@ vi.mock("pixi.js", () => ({
       }
       return child;
     });
+    // Like pixi: removes every child and returns them (layers reuse containers
+    // via `removeChildren().forEach((c) => c.destroy())`, CITY-506).
+    container.removeChildren.mockImplementation(() => container.children.splice(0));
     return container;
   }),
   Graphics: vi.fn().mockImplementation(() => ({
@@ -53,11 +56,17 @@ vi.mock("pixi.js", () => ({
     visible: true,
     label: "",
   })),
-  Text: vi.fn().mockImplementation(() => ({
+  // Like pixi v8: `new Text({ text, style })`, with a mutable `style` object
+  // (layers update `text.style.fill` in place when reusing Text objects).
+  Text: vi.fn().mockImplementation((options?: { text?: string; style?: object }) => ({
+    text: options?.text ?? "",
+    style: options?.style ?? {},
     anchor: { set: vi.fn() },
     position: { set: vi.fn() },
     rotation: 0,
     alpha: 1,
+    visible: true,
+    label: "",
     getBounds: vi.fn().mockReturnValue({ width: 50, height: 20 }),
     destroy: vi.fn(),
   })),
