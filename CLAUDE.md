@@ -183,5 +183,5 @@ Slash commands (`.claude/commands/`):
 5. Moving a ticket to Done on merge or commit.
 6. Assuming CodeRabbit re-reviewed a follow-up push.
 7. Shipping a CLI change without a smoke-test matrix.
-8. Deleting another agent's worktree or branch.
+8. Deleting another agent's worktree or branch, or merging with `--delete-branch` while another PR is stacked on that branch (GitHub closes the stacked PR). Retarget it to `main` first: `gh api -X PATCH repos/kevin-earl-denny/city-doodle/pulls/<n> -f base=main`.
 9. Two migrations with the same `down_revision` or revision id.
