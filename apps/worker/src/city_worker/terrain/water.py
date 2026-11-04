@@ -338,7 +338,9 @@ def _cells_to_polygon(
         geom = _mask_to_geometry(mask, tile_x, tile_y, tile_size, cell_size)
         if isinstance(geom, MultiPolygon):
             geom = max(geom.geoms, key=lambda g: g.area)
-        geom = geom.simplify(cell_size * 0.75, preserve_topology=True)
+        # 0.5 cell keeps one-cell-wide diagonal bands (beach fringes) intact;
+        # at 0.75 Douglas-Peucker collapses NE-SW staircases into slivers.
+        geom = geom.simplify(cell_size * 0.5, preserve_topology=True)
         if isinstance(geom, Polygon) and geom.is_valid and not geom.is_empty:
             return geom
         return None

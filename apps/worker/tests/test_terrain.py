@@ -439,18 +439,27 @@ class TestWaterFeatures:
         assert square.area == pytest.approx(256.0 * 256.0)
         assert land == []
 
-    def test_cells_to_polygon_joins_corner_touching_cells(self):
-        """8-connected cells (beach water fringes) come back as one polygon."""
+    @pytest.mark.parametrize(
+        "cells",
+        [
+            [(5, 5), (6, 6), (7, 7)],  # NW-SE
+            [(7, 5), (6, 6), (5, 7)],  # NE-SW
+            [(5 + k, 5 + k) for k in range(6)],
+            [(10 - k, 5 + k) for k in range(6)],
+        ],
+        ids=["nw-se-3", "ne-sw-3", "nw-se-6", "ne-sw-6"],
+    )
+    def test_cells_to_polygon_joins_corner_touching_cells(self, cells):
+        """8-connected cells (beach water fringes) come back as one polygon
+        covering every cell, in both diagonal directions."""
+        from shapely.geometry import Point
+
         cell = 1000.0 / 32
-        poly = _cells_to_polygon([(5, 5), (6, 6), (7, 7)], 0, 0, 1000.0, cell, 32)
+        poly = _cells_to_polygon(cells, 0, 0, 1000.0, cell, 32)
 
         assert poly is not None
         assert poly.geom_type == "Polygon"
-        # Simplify turns the stair-step into a diagonal band, so area shrinks;
-        # what matters is that every cell is still covered by the one polygon.
-        from shapely.geometry import Point
-
-        for i, j in [(5, 5), (6, 6), (7, 7)]:
+        for i, j in cells:
             assert poly.contains(Point((j + 0.5) * cell, (i + 0.5) * cell))
 
     def test_cells_to_polygon_traces_concave_outline(self):
