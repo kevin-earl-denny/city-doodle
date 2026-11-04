@@ -2030,15 +2030,19 @@ class TestIslandMask:
         assert result.mean() > 0.2, f"Center tile mean {result.mean()} too low"
         assert result.max() > 0.5, f"Center tile max {result.max()} too low"
 
+    # Island preset water_level is 0.42 +/- 12% seed jitter, so anything
+    # below this is guaranteed to be water (CITY-648).
+    MIN_ISLAND_WATER_LEVEL = 0.36
+
     def test_far_tile_is_ocean(self):
-        """A tile far from the origin should be nearly all zeros."""
+        """A tile far from the origin should be entirely below water level."""
         import numpy as np
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         hf = np.full((32, 32), 0.7)
         ctx = MaskContext(tx=5, ty=5, tile_size=500.0, resolution=32, seed=42)
         result = island_mask(hf, ctx)
-        assert result.max() < 0.1, f"Far tile max {result.max()} too high"
+        assert result.max() < self.MIN_ISLAND_WATER_LEVEL, f"Far tile max {result.max()} too high"
 
     def test_mask_is_deterministic(self):
         """Same seed should produce identical masks."""
@@ -2065,23 +2069,53 @@ class TestIslandMask:
         r2 = island_mask(hf, ctx2)
         assert not np.array_equal(r1, r2)
 
-    def test_mask_creates_radial_gradient(self):
-        """Terrain values should decrease with distance from center."""
+    def test_land_at_center_water_at_world_corners(self):
+        """For any seed, the world center is land and the 3x3 corners are water."""
         import numpy as np
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
-        # Use tile (2,1) which spans the island edge — inner part (left)
-        # should be higher than the outer part (right).
-        hf = np.full((32, 32), 0.7)
-        ctx = MaskContext(tx=2, ty=1, tile_size=500.0, resolution=32, seed=42)
+        hf = np.full((32, 32), 0.5)
+        for seed in range(30):
+            center = island_mask(
+                hf, MaskContext(tx=1, ty=1, tile_size=500.0, resolution=32, seed=seed)
+            )
+            assert center[16, 16] > 0.5, f"seed {seed}: world center is not land"
+            for tx, ty, i, j in [(0, 0, 0, 0), (2, 0, 0, -1), (0, 2, -1, 0), (2, 2, -1, -1)]:
+                corner = island_mask(
+                    hf, MaskContext(tx=tx, ty=ty, tile_size=500.0, resolution=32, seed=seed)
+                )
+                assert corner[i, j] < self.MIN_ISLAND_WATER_LEVEL, (
+                    f"seed {seed}: world corner ({tx},{ty}) is land"
+                )
+
+    def test_island_land_fraction(self):
+        """Islands should cover a usable share of the world (CITY-648 review)."""
+        import numpy as np
+        from city_worker.terrain.geographic_masks import MaskContext, island_mask
+
+        hf = np.full((32, 32), 0.5)
+        fractions = []
+        for seed in range(20):
+            world = np.block([
+                [
+                    island_mask(hf, MaskContext(tx=tx, ty=ty, tile_size=500.0, resolution=32, seed=seed))
+                    for tx in range(3)
+                ]
+                for ty in range(3)
+            ])
+            fractions.append((world > 0.42).mean())
+        assert 0.3 <= np.mean(fractions) <= 0.55, f"mean land fraction {np.mean(fractions):.2f}"
+        assert min(fractions) >= 0.15, f"smallest island {min(fractions):.2f} too small"
+
+    def test_interior_lifted_above_water(self):
+        """Low interior terrain must not dip below water (no inland puddles)."""
+        import numpy as np
+        from city_worker.terrain.geographic_masks import MaskContext, island_mask
+
+        hf = np.zeros((32, 32))
+        ctx = MaskContext(tx=1, ty=1, tile_size=500.0, resolution=32, seed=42)
         result = island_mask(hf, ctx)
-        # Left columns (closer to island center) should be higher than
-        # right columns (farther away).
-        inner_val = result[:, :8].mean()
-        outer_val = result[:, 24:].mean()
-        assert inner_val > outer_val, (
-            f"Inner {inner_val} should be > outer {outer_val}"
-        )
+        assert result[16, 16] >= 0.5
 
     def test_adjacent_tile_has_lower_values(self):
         """A tile at the world edge should have lower average values than center."""
@@ -2129,29 +2163,35 @@ class TestIslandMask:
         ]
         for ctx in edge_tiles:
             result = island_mask(hf, ctx)
-            assert result.mean() < 0.15, (
-                f"Edge tile ({ctx.tx},{ctx.ty}) mean {result.mean():.3f} too high — "
+            assert result.max() < self.MIN_ISLAND_WATER_LEVEL, (
+                f"Edge tile ({ctx.tx},{ctx.ty}) max {result.max():.3f} too high — "
                 "island should be surrounded by water"
             )
 
     def test_satellite_islands_possible(self):
-        """At least one seed in a range should produce satellite islands."""
+        """Some seeds should produce islets separate from the main island."""
         import numpy as np
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
+        from scipy import ndimage
 
         ts = 500.0
         res = 32
-        hf = np.full((res, res), 0.7)
+        hf = np.full((res, res), 0.5)
         found_satellite = False
 
-        for seed in range(200):
-            ctx = MaskContext(tx=-1, ty=2, tile_size=ts, resolution=res, seed=seed)
-            result = island_mask(hf, ctx)
-            if result.max() > 0.3:
+        for seed in range(60):
+            world = np.block([
+                [
+                    island_mask(hf, MaskContext(tx=tx, ty=ty, tile_size=ts, resolution=res, seed=seed))
+                    for tx in range(3)
+                ]
+                for ty in range(3)
+            ])
+            if ndimage.label(world > 0.42)[1] > 1:
                 found_satellite = True
                 break
 
-        assert found_satellite, "No satellite islands found in seeds 0-199"
+        assert found_satellite, "No satellite islands found in seeds 0-59"
 
 
 class TestPeninsulaMask:

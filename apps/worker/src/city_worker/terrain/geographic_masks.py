@@ -21,12 +21,12 @@ Individual mask implementations are added by follow-up tickets:
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 from numpy.typing import NDArray
-
+from opensimplex import OpenSimplex
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -122,81 +122,157 @@ def inland_mask(
 def island_mask(
     heightfield: NDArray[np.float64], ctx: MaskContext
 ) -> NDArray[np.float64]:
-    """Radial falloff mask for island worlds (CITY-387, CITY-545).
+    """Organic island mask for island worlds (CITY-387, CITY-545, CITY-648).
 
-    Multiplies the heightfield by a smooth radial falloff centered on
-    the world origin (middle of tile 1, 1).  The falloff edge is
-    perturbed by angle-dependent noise for an organic coastline, and
-    the island shape is slightly elliptical based on the seed.
+    Real islands are rarely round: they're elongated along a volcanic or
+    tectonic spine, lobed where several peaks merge, and have fractal
+    coastlines with peninsulas and coves.  The shape here is built from:
 
-    The radius is scaled to the full 3x3 tile world so the island
-    fills ~60% of the world area and is clearly surrounded by water.
-    Occasionally (seed-dependent) small satellite islands appear near
-    the main island.
+      1. A curved spine of 2-4 elliptical lobes (seed-driven count,
+         orientation, elongation and sizes) combined with a soft union.
+      2. Domain warping of the lobe field by low-frequency 2D noise, so
+         the outline bends into headlands and bays instead of staying
+         star-shaped around the center.
+      3. Additive 2D fBm along the shoreline for fine coastal detail.
+
+    Everything is evaluated in world coordinates, so the shape is
+    seamless across the 3x3 tiles.
+
+    Inside the island the heightfield is lifted above the island preset's
+    water level (~0.42), so interior noise dips no longer turn into
+    puddles; terrain height rises toward the spine like a real island.
     """
     res = ctx.resolution
     ts = ctx.tile_size
+    seed = ctx.seed
 
-    # Island center: middle of tile (1, 1) — center of the 3x3 world
-    cx = ts * 1.5
-    cy = ts * 1.5
-
-    # Base radius and transition band — sized relative to 3*ts world
-    base_radius = ts * 1.3
-    falloff_width = ts * 0.45
-
-    # Seed-derived eccentricity for variety
-    aspect = 0.85 + _seeded_hash(ctx.seed, 0) * 0.30  # 0.85 – 1.15
-    rotation = _seeded_hash(ctx.seed, 1) * math.pi     # 0 – π
-
-    # Build world-coordinate grids
     step = ts / res
     xs = ctx.tx * ts + np.arange(res, dtype=np.float64) * step
     ys = ctx.ty * ts + np.arange(res, dtype=np.float64) * step
     xx, yy = np.meshgrid(xs, ys)
 
-    dx = xx - cx
-    dy = yy - cy
+    # ── Domain warp: bend the whole outline ──
+    warp_freq = 1.0 / (ts * 1.1)
+    warp_amp = ts * 0.40
+    warp_x = _fbm_grid(xs, ys, seed + 1, warp_freq, octaves=2)
+    warp_y = _fbm_grid(xs, ys, seed + 2, warp_freq, octaves=2)
+    wx = xx + warp_x * warp_amp
+    wy = yy + warp_y * warp_amp
 
-    # Rotate + stretch for elliptical shape
-    cos_r, sin_r = math.cos(rotation), math.sin(rotation)
-    rx = dx * cos_r + dy * sin_r
-    ry = (-dx * sin_r + dy * cos_r) * aspect
-    dist = np.sqrt(rx * rx + ry * ry)
+    # ── Spine of lobes ──
+    cx = cy = ts * 1.5  # world center (middle of tile 1, 1)
+    spine_angle = _seeded_hash(seed, 1) * math.pi
+    spine_len = ts * (1.0 + _seeded_hash(seed, 2) * 0.7)  # 1.0 - 1.7 tiles
+    spine_bend = (_seeded_hash(seed, 3) - 0.5) * ts * 0.8
+    num_lobes = 2 + int(_seeded_hash(seed, 4) * 3)  # 2 - 4
+    ax_x, ax_y = math.cos(spine_angle), math.sin(spine_angle)
+    perp_x, perp_y = -ax_y, ax_x
 
-    # Angle-dependent noise for organic shoreline
-    angles = np.arctan2(dy, dx)
-    noise = _angle_noise(angles, ctx.seed)
-    perturbed_radius = np.maximum(base_radius + noise * ts * 0.25, ts * 0.5)
+    shape = np.zeros_like(xx)
+    for i in range(num_lobes):
+        # Position along the spine in [-0.5, 0.5] with jitter
+        u = (i / max(num_lobes - 1, 1)) - 0.5
+        u += (_seeded_hash(seed, 40 + i) - 0.5) * 0.25
+        bend = spine_bend * 4.0 * u * u  # arc through the world center
+        lx = cx + ax_x * u * spine_len + perp_x * bend
+        ly = cy + ax_y * u * spine_len + perp_y * bend
+        # Lobes are ellipses stretched along the spine
+        r_long = ts * (0.58 + _seeded_hash(seed, 50 + i) * 0.36)
+        r_short = r_long * (0.70 + _seeded_hash(seed, 60 + i) * 0.30)
+        dx = wx - lx
+        dy = wy - ly
+        along = (dx * ax_x + dy * ax_y) / r_long
+        across = (dx * perp_x + dy * perp_y) / r_short
+        lobe = np.exp(-(along * along + across * across))
+        # Soft union: 1 - prod(1 - lobe) keeps overlaps from spiking
+        shape = 1.0 - (1.0 - shape) * (1.0 - lobe)
 
-    # Smooth radial falloff
-    inner = perturbed_radius - falloff_width * 0.5
-    outer = perturbed_radius + falloff_width * 0.5
-    t = (dist - inner) / np.maximum(outer - inner, 1e-10)
-    mask = 1.0 - _smoothstep(t)
+    # Unwarped core lobe guarantees the world center (where the city
+    # starts) is always land, even if warping pulls the spine aside.
+    core_r = ts * 0.30
+    core = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (core_r * core_r))
+    shape = 1.0 - (1.0 - shape) * (1.0 - core)
 
-    # ── Satellite islands (~20% of worlds) ──
-    if _seeded_hash(ctx.seed, 5) > 0.8:
-        num_satellites = 1 + int(_seeded_hash(ctx.seed, 6) * 3)  # 1-3
-        for i in range(num_satellites):
-            sat_angle = _seeded_hash(ctx.seed, 10 + i) * 2.0 * math.pi
-            sat_dist = base_radius + ts * (0.3 + _seeded_hash(ctx.seed, 20 + i) * 0.4)
-            sat_cx = cx + sat_dist * math.cos(sat_angle)
-            sat_cy = cy + sat_dist * math.sin(sat_angle)
-            sat_radius = ts * (0.15 + _seeded_hash(ctx.seed, 30 + i) * 0.15)
-            sat_falloff = sat_radius * 0.5
+    # ── Satellite islets (~35% of worlds) ──
+    if _seeded_hash(seed, 5) > 0.65:
+        for i in range(1 + int(_seeded_hash(seed, 6) * 3)):  # 1 - 3
+            ang = _seeded_hash(seed, 10 + i) * 2.0 * math.pi
+            dist = ts * (1.05 + _seeded_hash(seed, 20 + i) * 0.25)
+            sx = cx + dist * math.cos(ang)
+            sy = cy + dist * math.sin(ang)
+            sr = ts * (0.07 + _seeded_hash(seed, 30 + i) * 0.08)
+            d2 = ((wx - sx) ** 2 + (wy - sy) ** 2) / (sr * sr)
+            shape = 1.0 - (1.0 - shape) * (1.0 - np.exp(-d2))
 
-            sat_dx = xx - sat_cx
-            sat_dy = yy - sat_cy
-            sat_d = np.sqrt(sat_dx * sat_dx + sat_dy * sat_dy)
+    # ── Coastline detail ──
+    # Mid-frequency fBm carves coves and headlands; the terrain
+    # heightfield adds fine fractal roughness to the shoreline.
+    coast_noise = _fbm_grid(xs, ys, seed + 3, 1.0 / (ts * 0.30), octaves=3)
+    field = shape + coast_noise * 0.28 + (heightfield - 0.5) * 0.20
 
-            sat_inner = sat_radius - sat_falloff * 0.5
-            sat_outer = sat_radius + sat_falloff * 0.5
-            sat_t = (sat_d - sat_inner) / np.maximum(sat_outer - sat_inner, 1e-10)
-            sat_mask = 1.0 - _smoothstep(sat_t)
-            mask = np.maximum(mask, sat_mask)
+    # Fade the field out near the 3x3 world boundary so the island is
+    # always surrounded by open water, however far a lobe reaches.
+    margin = ts * 0.35
+    edge_dist = np.minimum.reduce([xx, yy, 3.0 * ts - xx, 3.0 * ts - yy])
+    field = field * _smoothstep(edge_dist / margin)
 
-    return heightfield * mask
+    # Land where field > threshold; narrow band so the coast is crisp
+    threshold = 0.42
+    band = 0.10
+    land = _smoothstep((field - (threshold - band)) / (2.0 * band))
+
+    # ── Interior elevation ──
+    # Lift land above water (floor 0.5 > preset water_level ~0.42 +
+    # jitter).  Keep a low coastal plain where the city can grow and
+    # raise the terrain toward the spine so the high ground sits inland.
+    floor = 0.5
+    inland = np.clip((field - threshold) / 0.5, 0.0, 1.0)
+    relief = 0.35 + 0.65 * inland
+    land_height = floor + (1.0 - floor) * (
+        0.5 * heightfield * relief + 0.5 * inland**1.5
+    )
+
+    # Ocean floor keeps a little noise but always stays below the
+    # minimum island water level (~0.37), so no stray islets appear.
+    sea_height = heightfield * 0.3
+    return sea_height + (land_height - sea_height) * land
+
+
+def _fbm_grid(
+    xs: NDArray[np.float64],
+    ys: NDArray[np.float64],
+    seed: int,
+    frequency: float,
+    octaves: int = 4,
+) -> NDArray[np.float64]:
+    """2D fBm over the world-coordinate grid, roughly in [-1, 1].
+
+    opensimplex's noise2array costs ~0.1s per 128x128 call, so the noise
+    is sampled on a coarse grid (4 samples per cycle of the finest
+    octave) and bilinearly upsampled.  The fields used here are smooth,
+    so this is visually identical at a fraction of the cost.
+    """
+    span = max(xs[-1] - xs[0], ys[-1] - ys[0])
+    finest_cycles = frequency * (2 ** (octaves - 1)) * span
+    n = int(min(max(len(xs), len(ys)), math.ceil(finest_cycles * 4) + 2))
+    cxs = np.linspace(xs[0], xs[-1], n)
+    cys = np.linspace(ys[0], ys[-1], n)
+
+    simplex = OpenSimplex(seed=seed & 0x7FFFFFFF)
+    total = np.zeros((n, n), dtype=np.float64)
+    amp = 1.0
+    norm = 0.0
+    f = frequency
+    for _ in range(octaves):
+        total += amp * simplex.noise2array(cxs * f, cys * f)
+        norm += amp
+        amp *= 0.5
+        f *= 2.0
+    coarse = total / norm
+    if n == len(xs) and n == len(ys):
+        return coarse
+    rows = np.stack([np.interp(xs, cxs, row) for row in coarse])
+    return np.stack([np.interp(ys, cys, col) for col in rows.T], axis=1)
 
 
 def peninsula_mask(
