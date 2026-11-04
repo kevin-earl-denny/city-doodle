@@ -1,9 +1,10 @@
 import { render, screen, renderHook, act } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   MapCanvasProvider,
   useMapCanvasExport,
   useMapCanvasExportOptional,
+  useRegisterCanvasExport,
 } from "./MapCanvasContext";
 
 describe("MapCanvasContext", () => {
@@ -170,6 +171,74 @@ describe("MapCanvasContext", () => {
       expect(mockCapture).toHaveBeenCalledWith({ resolution: "4x" });
       expect(res.width).toBe(1920);
       expect(res.height).toBe(1080);
+    });
+  });
+
+  // CITY-698: registering with a context-valued effect dependency re-rendered
+  // the canvas forever once it was ready, which grew the heap until Chrome
+  // killed the tab.
+  describe("useRegisterCanvasExport", () => {
+    let renders = 0;
+    beforeEach(() => {
+      renders = 0;
+    });
+
+    // Like MapCanvas: a brand-new handle object on every render.
+    function Canvas({ isReady }: { isReady: boolean }) {
+      // Fail fast instead of looping until the test worker runs out of heap.
+      if (++renders > 50) throw new Error("render loop: Canvas rendered more than 50 times");
+      useRegisterCanvasExport({ exportAsPng: vi.fn(), captureAsPng: vi.fn(), isReady }, isReady);
+      return null;
+    }
+
+    function ReadyProbe() {
+      const { isReady } = useMapCanvasExport();
+      return <span data-testid="ready">{String(isReady)}</span>;
+    }
+
+    function Tree({ isReady, mounted = true }: { isReady: boolean; mounted?: boolean }) {
+      return (
+        <MapCanvasProvider>
+          {mounted && <Canvas isReady={isReady} />}
+          <ReadyProbe />
+        </MapCanvasProvider>
+      );
+    }
+
+    it("registers once when ready without a render loop", () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { rerender } = render(<Tree isReady={false} />);
+      expect(screen.getByTestId("ready")).toHaveTextContent("false");
+
+      renders = 0;
+      rerender(<Tree isReady />);
+
+      expect(screen.getByTestId("ready")).toHaveTextContent("true");
+      // The prop change plus one provider update; the old effect never settled.
+      expect(renders).toBeLessThanOrEqual(3);
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("Maximum update depth"),
+        expect.anything()
+      );
+      errorSpy.mockRestore();
+    });
+
+    it("unregisters when the canvas stops being ready or unmounts", () => {
+      const { rerender } = render(<Tree isReady />);
+      expect(screen.getByTestId("ready")).toHaveTextContent("true");
+
+      rerender(<Tree isReady={false} />);
+      expect(screen.getByTestId("ready")).toHaveTextContent("false");
+
+      rerender(<Tree isReady />);
+      expect(screen.getByTestId("ready")).toHaveTextContent("true");
+
+      rerender(<Tree isReady mounted={false} />);
+      expect(screen.getByTestId("ready")).toHaveTextContent("false");
+    });
+
+    it("is a no-op outside a provider", () => {
+      expect(() => render(<Canvas isReady />)).not.toThrow();
     });
   });
 });
