@@ -24,6 +24,66 @@ PRIORITY_MAP = {
 }
 PRIORITY_NAMES = {v: k for k, v in PRIORITY_MAP.items()}
 
+MISSING_KEY_MESSAGE = (
+    "LINEAR_API_KEY not set. Add it to the main checkout's .env.local or export it."
+)
+
+
+def _is_not_found_or_auth(text: str) -> bool:
+    """True when a Linear error means "not found" or "not authenticated"."""
+    t = text.lower()
+    return any(
+        k in t
+        for k in ("entity not found", "not found", "authentication", "unauthorized", "forbidden")
+    )
+
+
+def _format_graphql_error_detail(extensions: Any) -> str:
+    """Extract a concrete cause from a GraphQL error's `extensions` block.
+
+    Linear carries the real reason for an "Argument Validation Error" here:
+    a `validationErrors` array (one entry per failing field, each with a
+    `constraints` map of reason strings) and/or a `userPresentableMessage`.
+    """
+    if not isinstance(extensions, dict):
+        return ""
+
+    validation_errors = extensions.get("validationErrors")
+    if isinstance(validation_errors, list):
+        reasons: list[str] = []
+        for entry in validation_errors:
+            if not isinstance(entry, dict):
+                continue
+            constraints = entry.get("constraints")
+            if isinstance(constraints, dict) and constraints:
+                reasons.extend(str(v) for v in constraints.values() if v)
+            elif entry.get("property"):
+                reasons.append(f"invalid value for '{entry['property']}'")
+        if reasons:
+            return "; ".join(reasons)
+
+    presentable = extensions.get("userPresentableMessage")
+    if isinstance(presentable, str) and presentable.strip():
+        return presentable.strip()
+
+    return ""
+
+
+def _format_graphql_errors(errors: Any) -> str:
+    """Build a human-readable message from a GraphQL `errors` array."""
+    if not isinstance(errors, list) or not errors:
+        return "Unknown error"
+
+    parts: list[str] = []
+    for error in errors:
+        if not isinstance(error, dict):
+            continue
+        raw_message = error.get("message")
+        base = str(raw_message) if raw_message else "Unknown GraphQL error"
+        detail = _format_graphql_error_detail(error.get("extensions"))
+        parts.append(f"{base}: {detail}" if detail else base)
+    return "; ".join(parts) if parts else "Unknown error"
+
 
 class LinearTracker(TrackerBase):
     """Linear.app integration."""
@@ -65,20 +125,44 @@ class LinearTracker(TrackerBase):
         """
         try:
             response = self._execute_query(query)
-            return "viewer" in response.get("data", {})
-        except requests.RequestException:
+            return "viewer" in (response.get("data") or {})
+        except (requests.RequestException, RuntimeError):
             return False
 
     @with_retry()
     def _execute_query(self, query: str, variables: dict | None = None) -> dict[str, Any]:
-        """Execute a GraphQL query against Linear API."""
+        """Execute a GraphQL query against Linear API.
+
+        Fails loudly: a missing key, an auth rejection, or a GraphQL ``errors``
+        payload raises ``RuntimeError`` instead of returning an empty result that
+        callers would mistake for "nothing found".
+        """
+        if not self._api_key:
+            raise RuntimeError(MISSING_KEY_MESSAGE)
         payload: dict[str, Any] = {"query": query}
         if variables:
             payload["variables"] = variables
 
         response = requests.post(LINEAR_API_URL, headers=self._headers, json=payload, timeout=30)
+        if response.status_code in (400, 401, 403):
+            # Linear answers auth/validation failures with a GraphQL error body;
+            # surface its message rather than a bare "400 Client Error".
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and body.get("errors"):
+                detail = _format_graphql_errors(body["errors"]).rstrip(".")
+                if response.status_code in (401, 403) or "authenticat" in detail.lower():
+                    raise RuntimeError(
+                        f"Linear rejected LINEAR_API_KEY (HTTP {response.status_code}): {detail}. "
+                        "Check that the key is valid and not expired."
+                    )
+                raise RuntimeError(f"Linear API error: {detail}")
         response.raise_for_status()
         result: dict[str, Any] = response.json()
+        if result.get("errors"):
+            raise RuntimeError(f"Linear API error: {_format_graphql_errors(result['errors'])}")
         return result
 
     def get_ticket(self, ticket_id: str, include_children: bool = False) -> Ticket | None:
@@ -111,7 +195,7 @@ class LinearTracker(TrackerBase):
                 identifier
                 title
                 description
-                state {{ id name }}
+                state {{ id name type }}
                 team {{ id }}
                 labels {{ nodes {{ name }} }}
                 url
@@ -125,12 +209,18 @@ class LinearTracker(TrackerBase):
         """
         try:
             result = self._execute_query(query, {"id": ticket_id})
-            issue = result.get("data", {}).get("issue")
-            if not issue:
+        except RuntimeError as e:
+            # Linear reports an unknown identifier as a GraphQL "Entity not found"
+            # error — that is a real "no such ticket". Anything else (missing or
+            # invalid key, transport, other GraphQL errors) propagates so callers
+            # can't mistake an outage for a missing ticket.
+            if "entity not found" in str(e).lower():
                 return None
-            return self._parse_issue(issue, include_children=include_children)
-        except (requests.RequestException, KeyError):
+            raise
+        issue = (result.get("data") or {}).get("issue")
+        if not issue:
             return None
+        return self._parse_issue(issue, include_children=include_children)
 
     def list_tickets(
         self,
@@ -219,34 +309,34 @@ class LinearTracker(TrackerBase):
         cursor: str | None = None
         page_size = min(limit, 50)  # Linear max per page is 50
 
-        try:
-            while True:
-                variables: dict[str, Any] = {"first": page_size}
-                if cursor:
-                    variables["after"] = cursor
-                if filter_obj:
-                    variables["filter"] = filter_obj
+        # API failures propagate: a partial or empty list here is indistinguishable
+        # from "no tickets" (e.g. a missing LINEAR_API_KEY used to print
+        # "No tickets found" and exit 0).
+        while True:
+            variables: dict[str, Any] = {"first": page_size}
+            if cursor:
+                variables["after"] = cursor
+            if filter_obj:
+                variables["filter"] = filter_obj
 
-                result = self._execute_query(query, variables)
-                data = result.get("data", {}).get("issues", {})
-                issues = data.get("nodes", [])
-                page_info = data.get("pageInfo", {})
+            result = self._execute_query(query, variables)
+            data = (result.get("data") or {}).get("issues") or {}
+            issues = data.get("nodes", [])
+            page_info = data.get("pageInfo", {})
 
-                all_tickets.extend(self._parse_issue(issue) for issue in issues)
+            all_tickets.extend(self._parse_issue(issue) for issue in issues)
 
-                if len(all_tickets) >= limit:
-                    return all_tickets[:limit]
+            if len(all_tickets) >= limit:
+                return all_tickets[:limit]
 
-                if not page_info.get("hasNextPage", False):
-                    break
+            if not page_info.get("hasNextPage", False):
+                break
 
-                cursor = page_info.get("endCursor")
-                if not cursor:
-                    break
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                break
 
-            return all_tickets
-        except requests.RequestException:
-            return all_tickets  # Return what we have so far
+        return all_tickets
 
     def create_ticket(
         self,
@@ -452,8 +542,11 @@ class LinearTracker(TrackerBase):
         elif assignee:
             if assignee.lower() == "me":
                 viewer_id = self._get_viewer_id()
-                if viewer_id:
-                    input_obj["assigneeId"] = viewer_id
+                if not viewer_id:
+                    raise RuntimeError(
+                        "Could not resolve the current Linear user for --assignee me"
+                    )
+                input_obj["assigneeId"] = viewer_id
             else:
                 user_id = self._get_user_id_by_name(assignee)
                 if user_id:
@@ -507,6 +600,31 @@ class LinearTracker(TrackerBase):
             {"input": {"issueId": issue_uuid, "body": body}},
         )
 
+    def team_visible(self) -> bool | None:
+        """Whether the configured team is visible to this API key.
+
+        Returns True/False on a definite answer from Linear, or None when there
+        is nothing to check (no key or team) or the check itself failed (network).
+        A key from another workspace answers False: Linear reports the team as
+        not found, and team-filtered queries would otherwise return nothing.
+        """
+        if not self._api_key or not self._team_id:
+            return None
+        query = """
+        query TeamVisible($id: String!) {
+            team(id: $id) { id }
+        }
+        """
+        try:
+            result = self._execute_query(query, {"id": self._team_id})
+        except RuntimeError as e:
+            # Only "not found" / auth answers mean the key can't see the team;
+            # rate limits and server errors are inconclusive, not a key problem.
+            return False if _is_not_found_or_auth(str(e)) else None
+        except requests.RequestException:
+            return None
+        return bool((result.get("data") or {}).get("team"))
+
     def validate_config(self) -> tuple[bool, list[str]]:
         """Validate Linear configuration."""
         issues = []
@@ -556,7 +674,7 @@ class LinearTracker(TrackerBase):
 
             name_to_id = {n.get("name", "").lower(): n["id"] for n in nodes if n.get("id")}
             return [name_to_id[n.lower()] for n in label_names if n.lower() in name_to_id]
-        except requests.RequestException:
+        except (requests.RequestException, RuntimeError):
             return []
 
     def _get_or_create_label_ids(self, team_id: str | None, label_names: list[str]) -> list[str]:
@@ -610,7 +728,7 @@ class LinearTracker(TrackerBase):
                 logger.warning("Only %d of %d requested labels were applied", applied, requested)
 
             return label_ids
-        except requests.RequestException:
+        except (requests.RequestException, RuntimeError):
             logger.warning("Failed to resolve labels due to API error")
             return existing_ids
 
@@ -628,39 +746,53 @@ class LinearTracker(TrackerBase):
             result = self._execute_query(mutation, {"input": {"name": name, "teamId": team_id}})
             label = result.get("data", {}).get("issueLabelCreate", {}).get("issueLabel")
             return label.get("id") if label else None
-        except requests.RequestException:
+        except (requests.RequestException, RuntimeError):
             return None
 
     def list_labels(self) -> list[dict[str, str]]:
-        """List all labels with their IDs for the configured team."""
-        query = """
-        query ListLabels($teamId: String) {
-            issueLabels(filter: { team: { id: { eq: $teamId } } }, first: 250) {
-                nodes {
-                    id
-                    name
-                    color
+        """List labels with their IDs.
+
+        Queries the labels available to the configured team — which includes
+        workspace-scoped labels — via the same `team { labels }` path that label
+        *resolution* uses, so the listing matches what `create -l` will accept.
+        Errors propagate to the caller instead of being swallowed into an empty
+        result (an empty list means the team genuinely has no labels).
+        """
+        if self._team_id:
+            query = """
+            query TeamLabels($teamId: String!) {
+                team(id: $teamId) {
+                    labels(first: 250) {
+                        nodes { id name color }
+                    }
                 }
             }
-        }
-        """
-        variables = {}
-        if self._team_id:
-            variables["teamId"] = self._team_id
-
-        try:
-            result = self._execute_query(query, variables if variables else None)
-            nodes = result.get("data", {}).get("issueLabels", {}).get("nodes", [])
-            return [
-                {
-                    "id": node.get("id", ""),
-                    "name": node.get("name", ""),
-                    "color": node.get("color", ""),
+            """
+            variables: dict[str, Any] = {"teamId": self._team_id}
+        else:
+            query = """
+            query AllLabels {
+                issueLabels(first: 250) {
+                    nodes { id name color }
                 }
-                for node in nodes
-            ]
-        except requests.RequestException:
-            return []
+            }
+            """
+            variables = {}
+
+        result = self._execute_query(query, variables or None)
+        data = result.get("data") or {}
+        if self._team_id:
+            nodes = ((data.get("team") or {}).get("labels") or {}).get("nodes", [])
+        else:
+            nodes = (data.get("issueLabels") or {}).get("nodes", [])
+        return [
+            {
+                "id": node.get("id", ""),
+                "name": node.get("name", ""),
+                "color": node.get("color", ""),
+            }
+            for node in nodes
+        ]
 
     def _get_workflow_state_id(self, team_id: str, state_name: str) -> str | None:
         """Resolve workflow state name to state ID for a team."""
@@ -702,7 +834,7 @@ class LinearTracker(TrackerBase):
                     node_id: str | None = node.get("id")
                     return node_id
             return None
-        except requests.RequestException:
+        except (requests.RequestException, RuntimeError):
             return None
 
     def create_relation(
@@ -833,6 +965,7 @@ class LinearTracker(TrackerBase):
             title=issue.get("title", ""),
             description=issue.get("description", ""),
             status=state.get("name", ""),
+            status_type=state.get("type"),
             labels=[label["name"] for label in issue.get("labels", {}).get("nodes", [])],
             url=issue.get("url", ""),
             raw=issue,
@@ -885,12 +1018,11 @@ class LinearTracker(TrackerBase):
         if filter_obj:
             variables["filter"] = filter_obj
 
-        try:
-            result = self._execute_query(query, variables)
-            nodes = result.get("data", {}).get("projects", {}).get("nodes", [])
-            return [self._parse_project(p) for p in nodes]
-        except requests.RequestException:
-            return []
+        # Errors propagate: an empty list here would make `--project X` resolve
+        # to nothing and silently drop the filter.
+        result = self._execute_query(query, variables)
+        nodes = ((result.get("data") or {}).get("projects") or {}).get("nodes", [])
+        return [self._parse_project(p) for p in nodes]
 
     def get_project(self, project_id: str) -> Project | None:
         """Get a project by ID or name.
@@ -914,11 +1046,15 @@ class LinearTracker(TrackerBase):
         """
         try:
             result = self._execute_query(query, {"id": project_id})
-            project = result.get("data", {}).get("project")
+        except RuntimeError as e:
+            # A name (not a UUID) comes back as "Entity not found" -> try by name.
+            # Any other failure (auth, outage) propagates.
+            if "entity not found" not in str(e).lower():
+                raise
+        else:
+            project = (result.get("data") or {}).get("project")
             if project:
                 return self._parse_project(project)
-        except requests.RequestException:
-            pass
 
         # Try by name
         projects = self.list_projects()
@@ -979,13 +1115,17 @@ class LinearTracker(TrackerBase):
             raw=project,
         )
 
-    def _get_project_id(self, project_name: str) -> str | None:
-        """Resolve project name to ID."""
+    def _get_project_id(self, project_name: str) -> str:
+        """Resolve project name to ID.
+
+        Raises ``RuntimeError`` when no project matches: callers (list/create/
+        update) must not silently drop a project filter or assignment.
+        """
         projects = self.list_projects()
         for p in projects:
             if p.name.lower() == project_name.lower():
                 return p.id
-        return None
+        raise RuntimeError(f"Project not found: {project_name}")
 
     # -------------------------------------------------------------------------
     # User Management (for assignee support)
@@ -1014,7 +1154,7 @@ class LinearTracker(TrackerBase):
             if viewer_id:
                 cache.set(cache_key, viewer_id, ttl=1800)  # 30 min TTL
             return viewer_id
-        except requests.RequestException:
+        except (requests.RequestException, RuntimeError):
             return None
 
     def _get_user_id_by_name(self, name: str) -> str | None:
@@ -1044,7 +1184,7 @@ class LinearTracker(TrackerBase):
                     user_id: str | None = user.get("id")
                     return user_id
             return None
-        except requests.RequestException:
+        except (requests.RequestException, RuntimeError):
             return None
 
     def list_users(self) -> list[dict[str, str]]:
@@ -1085,5 +1225,5 @@ class LinearTracker(TrackerBase):
             ]
             cache.set(cache_key, user_list, ttl=1800)  # 30 min TTL
             return user_list
-        except requests.RequestException:
+        except (requests.RequestException, RuntimeError):
             return []
