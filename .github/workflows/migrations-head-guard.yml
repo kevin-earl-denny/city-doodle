@@ -29,6 +29,8 @@ permissions:
 
 jobs:
   guard:
+    permissions:
+      contents: read
     # This job name is the status-check context to mark as required on main.
     # Renaming it without updating branch protection silently stops gating PRs.
     name: Assert single Alembic head

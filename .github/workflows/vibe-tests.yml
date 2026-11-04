@@ -21,6 +21,8 @@ permissions:
 
 jobs:
   pytest:
+    permissions:
+      contents: read
     name: Vibe tests
     runs-on: ubuntu-24.04
     timeout-minutes: 10

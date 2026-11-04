@@ -16,7 +16,10 @@ updates:
       pip-minor-patch:
         update-types: ["minor", "patch"]
 
-  # npm (root workspace lockfile covers apps/web and packages/shared)
+  # npm: two tracked lockfiles. The root one (npm workspaces: apps/web +
+  # packages/shared) is what CI installs; apps/web/package-lock.json is what a
+  # Vercel build rooted at apps/web installs ("npm install" in vercel.json).
+  # Both must get security bumps.
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
@@ -30,6 +33,21 @@ updates:
       prefix: "chore(deps):"
     groups:
       npm-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "Chore"
+      - "Frontend"
+    commit-message:
+      prefix: "chore(deps):"
+    groups:
+      npm-web-minor-patch:
         update-types: ["minor", "patch"]
 
   # GitHub Actions (SHA pins; Dependabot updates the SHA and the # vX.Y.Z comment)

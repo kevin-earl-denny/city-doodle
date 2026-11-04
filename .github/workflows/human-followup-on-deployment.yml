@@ -17,14 +17,19 @@ on:
       - '**/.env.example'
 
 concurrency:
+  # Each run diffs only its own push, so every pending run must be kept
+  # (default keeps one and cancels the rest, which would skip a ticket).
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
 
 jobs:
   create-human-followup:
+    permissions:
+      contents: read
     name: Create HUMAN follow-up ticket
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -37,13 +42,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          fetch-depth: 2
+          # Full history: a multi-commit push needs BEFORE_SHA, which a shallow
+          # clone wouldn't have.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Get changed files
         id: changed
         run: |
-          FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA" 2>/dev/null || true)
+          # No error suppression: an unreadable diff must fail, not skip the ticket.
+          FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")
           echo "changed<<EOF" >> "$GITHUB_OUTPUT"
           echo "$FILES" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -67,8 +75,8 @@ jobs:
           python3 -m venv .vibe/.venv 2>/dev/null || true
           . .vibe/.venv/bin/activate
           pip install -q -e .
-          FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA" 2>/dev/null \
-            | grep -E 'fly\.toml|vercel\.json|\.env\.example' || true)
+          ALL_FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")
+          FILES=$(echo "$ALL_FILES" | grep -E 'fly\.toml|vercel\.json|\.env\.example' || true)
           ARGS=()
           while IFS= read -r f; do
             [ -n "$f" ] && ARGS+=(--files "$f")

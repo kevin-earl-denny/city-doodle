@@ -9,12 +9,17 @@ permissions:
   contents: write
 
 concurrency:
-  # Serialize bumps so two merges can't race on VERSION.
+  # Serialize bumps so two merges can't race on VERSION, and keep every
+  # pending run (`queue: max`): by default a third merge would cancel the
+  # second's pending run and its bump would be lost.
   group: ${{ github.workflow }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   bump:
+    permissions:
+      contents: write
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
