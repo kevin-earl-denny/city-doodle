@@ -78,6 +78,20 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^([ \t]*)DETAIL:.*$", re.MULTILINE), r"\1DETAIL: [redacted]"),
     (re.compile(r"\[parameters: [^\n]*"), "[parameters: redacted]"),
     (re.compile(r"(invalid input for query argument \$\d+:)[^\n]*"), r"\1 [redacted]"),
+    # CITY-686: asyncpg's codec errors are chained under that DataError and quote the
+    # value again, e.g. `ValueError: invalid UUID 'tok-...': length must be ...`.
+    (re.compile(r"(invalid UUID)[^\n]*"), r"\1 [redacted]"),
+    # Postgres data exceptions (SQLSTATE class 22) raised server-side echo the value:
+    # `invalid input syntax for type uuid: "tok-..."`, `invalid input value for enum
+    # x: "..."`, `value "..." is out of range for type integer`.
+    (
+        re.compile(r"(invalid input (?:syntax|value) for (?:type|enum) [^:\n]*:)[^\n]*"),
+        r"\1 [redacted]",
+    ),
+    (
+        re.compile(r'value "[^\n]*?" is out of range for type'),
+        "value [redacted] is out of range for type",
+    ),
     # pydantic ValidationError text echoes the offending input.
     (re.compile(r"input_value=.*?, input_type="), "input_value=[redacted], input_type="),
     (
