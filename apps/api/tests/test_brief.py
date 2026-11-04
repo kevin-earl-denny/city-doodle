@@ -3,11 +3,12 @@
 from uuid import UUID
 
 import pytest
+from httpx import AsyncClient
+
 from city_api.brief import service
 from city_api.brief.compiler import compile_brief
 from city_api.brief.prompt import SYSTEM_PROMPT, build_user_message
 from city_api.brief.schema import WorldBrief
-from httpx import AsyncClient
 
 TEST_USER_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -209,16 +210,18 @@ class TestCompilerEdgeCases:
 
 class TestRequestBounds:
     def test_previous_with_oversized_field_rejected(self):
-        from city_api.brief.schema import BriefRequest
         from pydantic import ValidationError
+
+        from city_api.brief.schema import BriefRequest
 
         big = make_brief(founding_story="x" * 5000)
         with pytest.raises(ValidationError):
             BriefRequest(prompt="a port", previous=big, refinement="more hills")
 
     def test_previous_with_oversized_list_rejected(self):
-        from city_api.brief.schema import BriefRequest
         from pydantic import ValidationError
+
+        from city_api.brief.schema import BriefRequest
 
         with pytest.raises(ValidationError):
             BriefRequest(
@@ -228,8 +231,9 @@ class TestRequestBounds:
             )
 
     def test_previous_requires_refinement(self):
-        from city_api.brief.schema import BriefRequest
         from pydantic import ValidationError
+
+        from city_api.brief.schema import BriefRequest
 
         with pytest.raises(ValidationError):
             BriefRequest(prompt="a port", previous=make_brief())

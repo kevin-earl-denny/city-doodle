@@ -15,7 +15,8 @@
 # ref's commit is exported with `git archive` into a temp dir and linted there.
 # So `git push origin CITY-NNN` from another checkout, or uncommitted edits in
 # this one, can't produce a false pass or a false block. node_modules is
-# symlinked in from this checkout for eslint/tsc.
+# symlinked in from this checkout for eslint/tsc. A ref whose tree (and base)
+# matches one already checked in this push is skipped.
 #
 # All blocking checks run, then failures are reported together. A missing tool
 # is a FAILURE, not a skip: a lint gate that silently switches itself off is
@@ -60,6 +61,13 @@ cleanup_trees() {
 }
 trap cleanup_trees EXIT
 
+# Scratch dir for diff listings: they are written to files (not read through
+# process substitution) so a failing `git diff` is caught, not read as "no
+# changes".
+LIST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/city-prepush.XXXXXX") || {
+  echo "$HOOK ERROR: could not create a temp dir." >&2; exit 1; }
+TMP_TREES+=("$LIST_DIR")
+
 # ── Tools (resolved once) ─────────────────────────────────────────────────────
 if [[ -x "$REPO_ROOT/.venv/bin/ruff" ]]; then
   RUFF=("$REPO_ROOT/.venv/bin/ruff")
@@ -83,13 +91,29 @@ web_bin() {
 # ── Per-ref check ─────────────────────────────────────────────────────────────
 # Usage: check_ref <local ref> <local sha>
 check_ref() {
-  local ref="$1" sha="$2" base path tree link
+  local ref="$1" sha="$2" base path tree link key
   local py_files=() web_files=() web_changed="" alembic_changed=""
+  local acmr_list="$LIST_DIR/acmr" all_list="$LIST_DIR/all"
 
   base=$(git merge-base "$BASE_REF" "$sha" 2>/dev/null || true)
   if [[ -z "$base" ]]; then
     echo "$HOOK WARNING: no merge-base with $BASE_REF for $ref (run 'git fetch origin'); checking files in the tip commit only."
     base=$(git rev-parse -q --verify "$sha^" 2>/dev/null || echo "$EMPTY_TREE")
+  fi
+
+  # The same tree against the same base was already checked (e.g. one commit
+  # pushed to several refs): checking it again only costs time.
+  key="$(git rev-parse "$sha^{tree}" 2>/dev/null):$base"
+  if [[ " $CHECKED_KEYS " == *" $key "* ]]; then
+    echo "$HOOK $ref: same tree as a ref already checked, skipping."
+    return 0
+  fi
+  CHECKED_KEYS+=" $key"
+
+  if ! git diff --name-only -z --diff-filter=ACMR "$base" "$sha" > "$acmr_list" ||
+     ! git diff --name-only -z --no-renames "$base" "$sha" > "$all_list"; then
+    add_failure "could not list the files changed on $ref (git diff failed)"
+    return 0
   fi
 
   # NUL-separated (-z) so non-ASCII / odd paths aren't C-quoted and dropped.
@@ -99,7 +123,7 @@ check_ref() {
       apps/api/*.py | apps/worker/*.py | lib/*.py) py_files+=("$path") ;;
       apps/web/*.ts | apps/web/*.tsx | apps/web/*.js | apps/web/*.jsx) web_files+=("$path") ;;
     esac
-  done < <(git diff --name-only -z --diff-filter=ACMR "$base" "$sha")
+  done < "$acmr_list"
 
   # Triggers: any change INCLUDING deletions (--no-renames splits a rename into
   # delete + add), so deleting an imported module still runs tsc.
@@ -110,7 +134,7 @@ check_ref() {
     case "$path" in
       apps/api/alembic/*) alembic_changed=1 ;;
     esac
-  done < <(git diff --name-only -z --no-renames "$base" "$sha")
+  done < "$all_list"
 
   if [[ ${#py_files[@]} -eq 0 && -z "$web_changed" && -z "$alembic_changed" ]]; then
     return 0
@@ -120,7 +144,9 @@ check_ref() {
   tree=$(mktemp -d "${TMPDIR:-/tmp}/city-prepush.XXXXXX") || {
     add_failure "could not create a temp dir to check $ref"; return 0; }
   TMP_TREES+=("$tree")
-  if ! git archive --format=tar "$sha" | tar -xf - -C "$tree"; then
+  # pipefail (scoped to this subshell) so a failed `git archive` isn't masked
+  # by tar exiting 0 on a truncated stream.
+  if ! (set -o pipefail; git archive --format=tar "$sha" | tar -xf - -C "$tree"); then
     add_failure "could not export $ref ($sha) for checking"
     return 0
   fi
@@ -151,6 +177,11 @@ check_ref() {
 
   # 2. eslint + tsc (apps/web)
   if [[ -n "$web_changed" ]]; then
+    # eslint/tsc come from THIS checkout's node_modules; say so when the pushed
+    # ref has different dependencies than what is installed here.
+    if ! git diff --quiet HEAD "$sha" -- package-lock.json apps/web/package-lock.json 2>/dev/null; then
+      echo "$HOOK WARNING: $ref changes package-lock.json relative to this checkout; eslint/tsc run with this checkout's node_modules (run 'npm ci' on that ref if results look wrong)."
+    fi
     local eslint tsc web_args=()
     eslint=$(web_bin eslint || true)
     tsc=$(web_bin tsc || true)
@@ -215,7 +246,11 @@ if [[ ${#SHAS[@]} -eq 0 ]]; then
 fi
 
 MULTI_REF=0
-[[ ${#SHAS[@]} -gt 1 ]] && MULTI_REF=1
+if [[ ${#SHAS[@]} -gt 1 ]]; then
+  MULTI_REF=1
+  echo "$HOOK checking ${#SHAS[@]} refs..."
+fi
+CHECKED_KEYS=""
 
 for i in "${!SHAS[@]}"; do
   check_ref "${REFS[$i]}" "${SHAS[$i]}" </dev/null

@@ -18,12 +18,20 @@ HOOK="[pre-commit]"
 # ("donn\303\251es/.env"), which no longer end in `.env` and slipped through.
 ENV_RE='(^|/)\.env($|\.)'
 EXAMPLE_RE='(^|/)\.env\.example$'
+# The listing goes to a file first so a failing `git diff` stops the commit
+# (fail closed) instead of reading as "nothing staged".
+STAGED_LIST="$(mktemp "${TMPDIR:-/tmp}/city-precommit.XXXXXX")"
+trap 'rm -f "$STAGED_LIST"' EXIT
+if ! git diff --cached --name-only -z --diff-filter=ACMR > "$STAGED_LIST"; then
+    echo "$HOOK ERROR: could not list staged files (git diff failed); refusing to commit." >&2
+    exit 1
+fi
 STAGED_ENV=""
 while IFS= read -r -d '' path; do
     if [[ "$path" =~ $ENV_RE ]] && ! [[ "$path" =~ $EXAMPLE_RE ]]; then
         STAGED_ENV+="$path"$'\n'
     fi
-done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+done < "$STAGED_LIST"
 STAGED_ENV="${STAGED_ENV%$'\n'}"
 
 if [ -n "$STAGED_ENV" ]; then
