@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { TransitView } from "./TransitView";
 import { TransitLinesPanel, TransitLine } from "./TransitLinesPanel";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ViewModeProvider } from "../shell/ViewModeContext";
 
 const mockLines: TransitLine[] = [
@@ -10,7 +11,12 @@ const mockLines: TransitLine[] = [
 ];
 
 function renderWithProviders(ui: React.ReactElement) {
-  return render(<ViewModeProvider>{ui}</ViewModeProvider>);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <ViewModeProvider>{ui}</ViewModeProvider>
+    </QueryClientProvider>
+  );
 }
 
 describe("TransitView", () => {

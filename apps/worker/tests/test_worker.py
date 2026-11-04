@@ -1,6 +1,7 @@
 """Tests for worker module."""
 
 import asyncio
+from contextlib import ExitStack, contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -8,6 +9,32 @@ import pytest
 from city_worker.config import Settings
 from city_worker.models import JobStatus, JobType
 from city_worker.runner import JobRunner, _make_asyncpg_dsn
+
+# Runner methods that touch the database; handlers call these, so unit tests
+# stub them all (CITY-626 added progress/status writes inside the handlers).
+_DB_WRITE_METHODS = (
+    "_save_terrain_tiles",
+    "_update_tile_terrain_status",
+    "_update_tiles_terrain_status_bulk",
+    "_update_job_progress",
+    "_save_growth_results",
+)
+
+
+@contextmanager
+def no_db(runner, world_state=([], [], [], [], 42)):
+    """Stub every DB read/write a job handler makes."""
+    with ExitStack() as stack:
+        for name in _DB_WRITE_METHODS:
+            stack.enter_context(patch.object(runner, name, new_callable=AsyncMock))
+        stack.enter_context(
+            patch.object(
+                runner, "_load_world_state", new_callable=AsyncMock, return_value=world_state
+            )
+        )
+        for name in ("_load_transit_stations", "_load_water_regions"):
+            stack.enter_context(patch.object(runner, name, new_callable=AsyncMock, return_value=[]))
+        yield
 
 
 def test_job_status_values():
@@ -61,15 +88,15 @@ async def test_job_handler_terrain_generation():
     """Test terrain generation handler returns expected result."""
     runner = JobRunner()
 
-    # Mock the database save to avoid actual DB calls
-    with patch.object(runner, "_save_terrain_tiles", new_callable=AsyncMock):
+    with no_db(runner):
         result = await runner._handle_terrain_generation(
+            uuid4(),
             {
                 "world_id": str(uuid4()),
                 "world_seed": 42,
                 "center_tx": 0,
                 "center_ty": 0,
-            }
+            },
         )
 
     assert "status" in result
@@ -83,10 +110,10 @@ async def test_job_handler_terrain_generation_missing_params():
     runner = JobRunner()
 
     with pytest.raises(ValueError, match="world_id is required"):
-        await runner._handle_terrain_generation({})
+        await runner._handle_terrain_generation(uuid4(), {})
 
     with pytest.raises(ValueError, match="world_seed is required"):
-        await runner._handle_terrain_generation({"world_id": str(uuid4())})
+        await runner._handle_terrain_generation(uuid4(), {"world_id": str(uuid4())})
 
 
 @pytest.mark.asyncio
@@ -112,14 +139,9 @@ async def test_job_handler_city_growth():
             "historic": False,
         }
     ]
-    with (
-        patch.object(
-            runner, "_load_world_state", new_callable=AsyncMock,
-            return_value=(districts, [], [], [], 42),
-        ),
-        patch.object(runner, "_save_growth_results", new_callable=AsyncMock),
-    ):
+    with no_db(runner, world_state=(districts, [], [], [], 42)):
         result = await runner._handle_city_growth(
+            uuid4(),
             {"world_id": world_id, "years": 1},
         )
 
@@ -132,7 +154,7 @@ async def test_job_handler_city_growth():
 async def test_job_handler_export_png():
     """Test PNG export handler returns expected result."""
     runner = JobRunner()
-    result = await runner._handle_export_png({})
+    result = await runner._handle_export_png(uuid4(), {})
 
     assert "status" in result
     assert result["status"] == "exported"
@@ -142,7 +164,7 @@ async def test_job_handler_export_png():
 async def test_job_handler_export_gif():
     """Test GIF export handler returns expected result."""
     runner = JobRunner()
-    result = await runner._handle_export_gif({})
+    result = await runner._handle_export_gif(uuid4(), {})
 
     assert "status" in result
     assert result["status"] == "exported"
@@ -154,7 +176,7 @@ async def test_run_job_handler_unknown_type():
     runner = JobRunner()
 
     with pytest.raises(ValueError, match="Unknown job type"):
-        await runner._run_job_handler("unknown_type", {})
+        await runner._run_job_handler(uuid4(), "unknown_type", {})
 
 
 @pytest.mark.asyncio
@@ -169,13 +191,14 @@ async def test_run_job_handler_valid_types():
     ]
 
     for job_type in simple_types:
-        result = await runner._run_job_handler(job_type.value, {})
+        result = await runner._run_job_handler(uuid4(), job_type.value, {})
         assert isinstance(result, dict)
         assert "status" in result
 
     # Test terrain generation with required params
-    with patch.object(runner, "_save_terrain_tiles", new_callable=AsyncMock):
+    with no_db(runner):
         result = await runner._run_job_handler(
+            uuid4(),
             JobType.TERRAIN_GENERATION.value,
             {"world_id": str(uuid4()), "world_seed": 42, "center_tx": 0, "center_ty": 0},
         )
@@ -184,15 +207,11 @@ async def test_run_job_handler_valid_types():
 
     # Test city growth with required params and mocked DB
     world_id = str(uuid4())
-    with (
-        patch.object(
-            runner, "_load_world_state", new_callable=AsyncMock,
-            return_value=([], [], [], [], 42),
-        ),
-        patch.object(runner, "_save_growth_results", new_callable=AsyncMock),
-    ):
+    with no_db(runner):
         result = await runner._run_job_handler(
-            JobType.CITY_GROWTH.value, {"world_id": world_id},
+            uuid4(),
+            JobType.CITY_GROWTH.value,
+            {"world_id": world_id},
         )
         assert isinstance(result, dict)
         assert "status" in result
@@ -299,8 +318,8 @@ async def test_job_handler_with_params():
         "center_ty": 3,
     }
 
-    with patch.object(runner, "_save_terrain_tiles", new_callable=AsyncMock):
-        result = await runner._handle_terrain_generation(params)
+    with no_db(runner):
+        result = await runner._handle_terrain_generation(uuid4(), params)
 
     assert result is not None
     assert "status" in result
@@ -320,10 +339,9 @@ async def test_execute_job_success():
         "center_ty": 0,
     }
 
-    # Mock _update_job_status and _save_terrain_tiles to avoid database
     with (
+        no_db(runner),
         patch.object(runner, "_update_job_status", new_callable=AsyncMock) as mock_update,
-        patch.object(runner, "_save_terrain_tiles", new_callable=AsyncMock),
     ):
         await runner._execute_job(job_id, JobType.TERRAIN_GENERATION.value, params)
 
@@ -430,7 +448,9 @@ async def test_poll_and_execute_returns_true_when_job_found():
 
     with (
         patch.object(
-            runner, "_claim_job", new_callable=AsyncMock,
+            runner,
+            "_claim_job",
+            new_callable=AsyncMock,
             return_value=(job_id, "export_png", {}),
         ),
         patch.object(runner, "_execute_job", new_callable=AsyncMock),
@@ -561,7 +581,9 @@ async def test_poll_and_execute_returns_true_when_job_claimed():
 
     with (
         patch.object(
-            runner, "_claim_job", new_callable=AsyncMock,
+            runner,
+            "_claim_job",
+            new_callable=AsyncMock,
             return_value=(job_id, "export_png", {}),
         ),
         patch.object(runner, "_execute_job", new_callable=AsyncMock),
@@ -575,6 +597,7 @@ async def test_poll_and_execute_returns_false_at_capacity():
     """Test _poll_and_execute returns False when at max capacity."""
     runner = JobRunner()
     from city_worker.config import settings
+
     for _ in range(settings.max_concurrent_jobs):
         runner._active_jobs.add(uuid4())
 

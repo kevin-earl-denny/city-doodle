@@ -540,14 +540,14 @@ class TestCreateSegment:
         )
         line_id = line_response.json()["id"]
 
-        fake_station_id = "00000000-0000-0000-0000-000000000000"
-
+        # Two distinct nonexistent stations: identical IDs are rejected earlier by
+        # schema validation (422), which would not exercise the existence check.
         response = await client.post(
             f"/transit/lines/{line_id}/segments",
             json={
                 "line_id": line_id,
-                "from_station_id": fake_station_id,
-                "to_station_id": fake_station_id,
+                "from_station_id": "00000000-0000-0000-0000-0000000000a1",
+                "to_station_id": "00000000-0000-0000-0000-0000000000a2",
                 "order_in_line": 0,
             },
             headers={"X-User-Id": TEST_USER_ID},

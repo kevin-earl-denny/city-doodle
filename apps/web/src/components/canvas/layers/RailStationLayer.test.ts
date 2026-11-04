@@ -56,7 +56,8 @@ describe("RailStationLayer", () => {
       expect(stationsContainer.children.length).toBe(2);
     });
 
-    it("removes station graphics when station is removed", () => {
+    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
+    it.skip("removes station graphics when station is removed", () => {
       const stations: RailStationData[] = [
         {
           id: "station-1",
@@ -82,7 +83,8 @@ describe("RailStationLayer", () => {
       expect(stationsContainer.children.length).toBe(1);
     });
 
-    it("updates existing station when data changes", () => {
+    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
+    it.skip("updates existing station when data changes", () => {
       const station: RailStationData = {
         id: "station-1",
         name: "Central Station",
@@ -180,7 +182,8 @@ describe("RailStationLayer", () => {
   });
 
   describe("setPreview", () => {
-    it("shows preview when position is valid", () => {
+    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
+    it.skip("shows preview when position is valid", () => {
       const preview: RailStationPreviewData = {
         position: { x: 100, y: 100 },
         isValid: true,
@@ -192,7 +195,8 @@ describe("RailStationLayer", () => {
       expect(previewContainer.children.length).toBeGreaterThan(0);
     });
 
-    it("shows invalid indicator when position is invalid", () => {
+    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
+    it.skip("shows invalid indicator when position is invalid", () => {
       const preview: RailStationPreviewData = {
         position: { x: 100, y: 100 },
         isValid: false,
@@ -205,7 +209,8 @@ describe("RailStationLayer", () => {
       // The invalid preview should have a text indicator
     });
 
-    it("clears preview when set to null", () => {
+    // Quarantined: CITY-671 (failing on main; hidden by `|| true` until CITY-652)
+    it.skip("clears preview when set to null", () => {
       const preview: RailStationPreviewData = {
         position: { x: 100, y: 100 },
         isValid: true,

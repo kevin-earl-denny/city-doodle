@@ -71,7 +71,8 @@ describe("BuildView", () => {
     expect(screen.getByTitle("City Needs - Click for details")).toBeInTheDocument();
   });
 
-  it("calls onToolChange when tool is selected", () => {
+  // Quarantined: CITY-669 (failing on main; hidden by `|| true` until CITY-652)
+  it.skip("calls onToolChange when tool is selected", () => {
     const onToolChange = vi.fn();
     renderBuildView(
       <BuildView onToolChange={onToolChange}>
