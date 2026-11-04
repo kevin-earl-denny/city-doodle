@@ -237,7 +237,6 @@ engine_hint: {relief: flat, coast_ruggedness: smooth, barrier_islands: true, bar
 
   Planning codes commonly treat slopes under about 10–15% as freely buildable, 15–25% as buildable with special design, and 25–30% or more as generally unsuitable. (Greenville, IL code at codelibrary.amlegal.com; Williamsburg, VA comprehensive plan at williamsburgva.gov; Carlsbad, CA hillside guidelines)
 - **`elevation_m`** is the typical elevation range of the developed area above sea level.
-- **`existing_engine_preset`** points to `apps/worker/src/city_worker/terrain/geographic_presets.py`.
 
 ---
 
@@ -268,7 +267,6 @@ water_features: [ocean_one_side, 0-2 rivers, optional_lagoon]
 downtown_at: "river mouth or cove, just inland of beach"
 growth: "linear along coast, then inland"
 tagline: "Coastal: sun, sand, and a long seaside promenade. Think Barcelona, Tel Aviv, Nice."
-existing_engine_preset: {water_level: 0.35, beach_enabled: true, bay_enabled: true, barrier_islands_enabled: true}
 ```
 
 ### 2.2 `bay_harbor` (existing)
@@ -300,7 +298,6 @@ water_features: [bay, ocean_beyond_mouth, 0-2 rivers_into_bay]
 downtown_at: "sheltered inner shore of bay"
 growth: "wraps around bay; ferries then bridges to far shore; hills ring harbor"
 tagline: "Bay / Harbor: sheltered water, busy docks. Think San Francisco, Sydney, Halifax."
-existing_engine_preset: {water_level: 0.38, bay_min_concavity_angle: 25, bay_erosion_strength: 1.2, barrier_islands_enabled: false}
 ```
 
 ### 2.3 `river_valley` (existing)
@@ -332,7 +329,6 @@ river_course: [straight, meandering]
 downtown_at: "terrace/bluff above floodplain at crossing"
 growth: "linear along valley; bridges link banks; bluff vs floodplain contrast"
 tagline: "River Valley: one big river, many bridges. Think Budapest, Paris, Prague."
-existing_engine_preset: {water_level: 0.28, min_river_length: 6, beach_enabled: false, bay_enabled: false}
 ```
 
 ### 2.4 `lakefront` (existing)
@@ -363,7 +359,6 @@ water_features: [large_lake_one_side, 0-1 outflow_river, 2-8 small_inland_lakes]
 downtown_at: "lakeshore, often at river mouth/outflow"
 growth: "half-ring around lakefront; grid back from shore"
 tagline: "Lakefront: big fresh water, no tides, endless shoreline parks. Think Chicago, Toronto, Geneva."
-existing_engine_preset: {water_level: 0.34, bay_enabled: false, barrier_islands_enabled: false, max_lakes: 8}
 ```
 
 ### 2.5 `inland` (existing)
@@ -392,7 +387,6 @@ water_features: [0-2 small rivers or creeks, 0-2 reservoirs]
 downtown_at: "crossroads / railhead / ridge"
 growth: "concentric or star along transport corridors"
 tagline: "Inland: no coast, all crossroads. Think Johannesburg, Madrid, Denver."
-existing_engine_preset: {water_level: 0.15, height_scale: 0.2515, beach_enabled: false}
 ```
 
 ### 2.6 `island` (existing)
@@ -423,7 +417,6 @@ water_features: [water_all_sides, short_streams, optional_harbor_inlet]
 downtown_at: "most sheltered harbor facing mainland"
 growth: "densify upward + reclaim land; bridges/tunnels to mainland"
 tagline: "Island: water on every side, bridges to everywhere. Think Manhattan, Singapore, Montreal."
-existing_engine_preset: {water_level: 0.42, beach_width_multiplier: 1.3, barrier_islands_enabled: true}
 ```
 
 ### 2.7 `peninsula` (existing)
@@ -453,7 +446,6 @@ water_features: [water_three_sides, 0-1 rivers]
 downtown_at: "near the tip"
 growth: "from tip back toward neck; landfill widens neck; bridges across"
 tagline: "Peninsula: water on three sides, one way out. Think San Francisco, Boston, Valletta."
-existing_engine_preset: {water_level: 0.40, bay_min_concavity_angle: 40, barrier_islands_enabled: false}
 ```
 
 ### 2.8 `delta` (existing)
@@ -486,7 +478,6 @@ river_course: braided_or_branching
 downtown_at: "natural levee of main channel or delta apex"
 growth: "onto drained marsh behind levees; canals; many bridges"
 tagline: "Delta: where the river fans out and the land barely rises. Think New Orleans, Rotterdam, Dhaka."
-existing_engine_preset: {water_level: 0.33, height_scale: 0.1886, min_river_length: 4, bay_river_mouth_factor: 3.0, barrier_islands_enabled: true}
 ```
 
 ---
