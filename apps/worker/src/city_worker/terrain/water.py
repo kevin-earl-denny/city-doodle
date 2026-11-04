@@ -557,6 +557,12 @@ def _suppress_parallel_rivers(
     return [f for i, f in enumerate(features) if i not in suppressed]
 
 
+# Douglas-Peucker tolerance (in grid cells) applied to rivers after Chaikin
+# smoothing (CITY-667). 0.05 cells is ~0.1px at 256px/128 cells, which is
+# invisible but removes most of the subdivision's near-collinear vertices.
+RIVER_OUTPUT_SIMPLIFY_CELLS = 0.05
+
+
 def extract_rivers(
     heightfield: NDArray[np.float64],
     water_level: float,
@@ -785,7 +791,12 @@ def extract_rivers(
                 line = LineString(coords)
                 simplified = line.simplify(cell_size * 0.3, preserve_topology=True)
                 smoothed = _chaikin_smooth(list(simplified.coords), iterations=6)
-                smoothed_line = LineString(smoothed)
+                # CITY-667: 6 Chaikin passes multiply vertices 64x, mostly
+                # near-collinear points. Re-simplify at a sub-pixel tolerance
+                # to keep the curve visually identical at a fraction of the size.
+                smoothed_line = LineString(smoothed).simplify(
+                    cell_size * RIVER_OUTPUT_SIMPLIFY_CELLS, preserve_topology=False
+                )
 
                 # CITY-490: Interpolate per-vertex widths onto the
                 # smoothed line. Build cumulative-distance parameterisation

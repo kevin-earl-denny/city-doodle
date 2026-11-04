@@ -1807,6 +1807,30 @@ class TestRiverImprovements:
         # More iterations = more points
         assert len(smooth2) > len(smooth1) > len(coords)
 
+    def test_river_vertices_stay_compact_after_smoothing(self):
+        """CITY-667: Chaikin x6 must not ship 64x vertices per river."""
+        import numpy as np
+        from city_worker.terrain.water import extract_rivers
+
+        # Meandering valley so rivers have real curvature to preserve
+        hf = np.ones((64, 64)) * 0.6
+        for i in range(64):
+            center = 32 + 6 * np.sin(i / 8)
+            for j in range(64):
+                hf[i, j] -= max(0, 0.3 - abs(j - center) * 0.05)
+            hf[i, int(center)] = 0.5 - i * 0.004
+
+        rivers = extract_rivers(
+            hf, water_level=0.25, tile_x=0, tile_y=0,
+            tile_size=256.0, flow_threshold=5.0, min_length=5,
+        )
+        assert rivers
+        for river in rivers:
+            coords = river.geometry["coordinates"]
+            # Unsimplified output was 192-640 vertices for this fixture
+            assert len(coords) < 64
+            assert len(river.properties["widths"]) == len(coords)
+
 
 class TestGeographicMasks:
     """Tests for geographic mask framework (CITY-386)."""
