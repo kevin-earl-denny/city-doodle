@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # Python dependencies
+  # Python dependencies (repo tooling: lib/vibe)
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -11,8 +11,46 @@ updates:
       - "Chore"
     commit-message:
       prefix: "chore(deps):"
+    groups:
+      # One PR for all minor/patch bumps; majors stay separate for review.
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
 
-  # GitHub Actions
+  # npm: two tracked lockfiles. The root one (npm workspaces: apps/web +
+  # packages/shared) is what CI installs; apps/web/package-lock.json is what a
+  # Vercel build rooted at apps/web installs ("npm install" in vercel.json).
+  # Both must get security bumps.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "Chore"
+      - "Frontend"
+    commit-message:
+      prefix: "chore(deps):"
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "Chore"
+      - "Frontend"
+    commit-message:
+      prefix: "chore(deps):"
+    groups:
+      npm-web-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions (SHA pins; Dependabot updates the SHA and the # vX.Y.Z comment)
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -24,3 +62,6 @@ updates:
       - "Infra"
     commit-message:
       prefix: "chore(actions):"
+    groups:
+      actions:
+        patterns: ["*"]

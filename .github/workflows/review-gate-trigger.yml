@@ -12,7 +12,8 @@ permissions: {}
 
 jobs:
   relay:
-    runs-on: ubuntu-latest
+    permissions: {}
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Hand off to review-gate

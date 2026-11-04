@@ -19,20 +19,36 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Deploys run one at a time and are never cancelled. `queue: max` keeps every
+  # pending run (default is ONE pending run; a newer one would cancel it, and
+  # since each run's paths filter only sees its own push, an api/worker change
+  # in the cancelled push would never deploy). Deploy jobs check out the branch
+  # tip rather than the event SHA, so even if queued runs start out of order,
+  # every deploy ships the latest main and never rolls back to an older commit.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   detect-changes:
+    permissions:
+      contents: read
     name: Detect Changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       api: ${{ steps.filter.outputs.api }}
       worker: ${{ steps.filter.outputs.worker }}
       shared: ${{ steps.filter.outputs.shared }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Check for changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -44,15 +60,22 @@ jobs:
               - 'packages/shared/**'
 
   deploy-api:
+    permissions:
+      contents: read
     name: Deploy API
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     needs: detect-changes
     if: |
       github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_api == 'true' ||
       github.event_name == 'push' && (needs.detect-changes.outputs.api == 'true' || needs.detect-changes.outputs.shared == 'true')
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # Branch tip, not github.sha: see the concurrency comment above.
+          ref: ${{ github.ref }}
+          persist-credentials: false
 
       - name: Setup Fly CLI
         run: |
@@ -66,15 +89,22 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_API }}
 
   deploy-worker:
+    permissions:
+      contents: read
     name: Deploy Worker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     needs: detect-changes
     if: |
       github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_worker == 'true' ||
       github.event_name == 'push' && (needs.detect-changes.outputs.worker == 'true' || needs.detect-changes.outputs.shared == 'true')
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # Branch tip, not github.sha: see the concurrency comment above.
+          ref: ${{ github.ref }}
+          persist-credentials: false
 
       - name: Setup Fly CLI
         run: |

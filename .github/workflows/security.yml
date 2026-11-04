@@ -1,82 +1,145 @@
+# Security checks: secret scanning, dependency review, SBOM, CodeQL.
+#
+# Gitleaks runs as the OSS CLI (checksum-verified) rather than
+# gitleaks/gitleaks-action, which needs a paid license on organization-owned
+# repos. PRs scan only the commits they add; pushes to main and the weekly
+# schedule scan full history.
 name: Security
 
 on:
+  pull_request:
+    # Any base, so stacked ticket PRs are scanned too.
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
-    # Run weekly on Monday at 9am UTC
+    # Weekly, Monday 09:00 UTC
     - cron: '0 9 * * 1'
+
+concurrency:
+  # Event name included so the weekly schedule and a main push never cancel
+  # each other (the push run is the only one that produces the SBOM).
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   gitleaks:
+    permissions:
+      contents: read
     name: Secret Scanning
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      # sha256 of gitleaks_8.30.1_linux_x64.tar.gz, pinned here rather than read
+      # from the release's own checksums.txt (which a tampered release would
+      # also change). Update both values together.
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "$base/$tarball"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum --check --strict -
+          sudo tar -xzf "$tarball" -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # `git log -p` shows no diff for merge commits by default, so a secret
+          # added while resolving a merge conflict would be invisible.
+          # --diff-merges=first-parent shows each merge's own changes. --log-opts
+          # replaces gitleaks' default log args, so the full-history scan
+          # restates them (--full-history --all).
+          if [ -n "$BASE_SHA" ]; then
+            gitleaks git --config .gitleaks.toml --redact --verbose \
+              --log-opts="--diff-merges=first-parent $BASE_SHA..$HEAD_SHA" .
+          else
+            gitleaks git --config .gitleaks.toml --redact --verbose \
+              --log-opts="--full-history --all --diff-merges=first-parent" .
+          fi
 
   dependency-review:
+    permissions:
+      contents: read
+      pull-requests: read
     name: Dependency Review
-    runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Check Dependency graph status
+      # Probe the endpoint dependency-review-action itself calls rather than
+      # reading `security_and_analysis`, which the workflow token can't see.
+      # Only the documented 403 ("not available for this repo") skips the
+      # review, loudly; any other failure fails the job.
+      - name: Check Dependency Review availability
         id: depgraph
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          status=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+          code=$(curl -s -D "$RUNNER_TEMP/headers.txt" -o "$RUNNER_TEMP/resp.json" -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}" \
-            | jq -r '.security_and_analysis.dependency_graph.status // "disabled"')
-          echo "status=$status" >> $GITHUB_OUTPUT
+            "https://api.github.com/repos/$GH_REPOSITORY/dependency-graph/compare/$BASE_SHA...$HEAD_SHA")
+          msg=$(jq -r '.message // ""' "$RUNNER_TEMP/resp.json" 2>/dev/null || true)
+          remaining=$(grep -i '^x-ratelimit-remaining:' "$RUNNER_TEMP/headers.txt" | tr -dc '0-9' || true)
+          # A rate-limited 403 (or any 429) must fail, not skip the review:
+          # only a 403 that isn't a rate limit means "not available here".
+          if [ "$code" = "200" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" = "403" ] && [ "$remaining" != "0" ] \
+               && ! grep -qi '^retry-after:' "$RUNNER_TEMP/headers.txt" \
+               && ! echo "$msg" | grep -qi 'rate limit'; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Dependency Review unavailable for this repo (HTTP 403: $msg). Enable the Dependency graph to turn it on."
+          else
+            echo "::error::Dependency graph probe failed (HTTP $code, ratelimit-remaining=${remaining:-?}): $msg"
+            exit 1
+          fi
 
       - name: Dependency Review
-        if: steps.depgraph.outputs.status == 'enabled'
-        uses: actions/dependency-review-action@v4
+        if: steps.depgraph.outputs.available == 'true'
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
         with:
           fail-on-severity: high
 
-      - name: Warn if Dependency graph disabled
-        if: steps.depgraph.outputs.status != 'enabled'
-        run: |
-          echo "::warning::Dependency Review is not supported on this repository."
-          echo "Enable Dependency graph in Settings > Code security and analysis:"
-          echo "https://github.com/${{ github.repository }}/settings/security_analysis"
-          echo "Run 'bin/vibe setup' to be prompted to enable it when configuring the project."
-
   sbom:
-    name: Generate SBOM
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
-      contents: write
+      contents: read
+    name: Generate SBOM
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
       - name: Generate SBOM
         run: syft . -o spdx-json > sbom.spdx.json
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: sbom.spdx.json
@@ -84,19 +147,23 @@ jobs:
 
   codeql:
     name: CodeQL Analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
+      contents: read
       security-events: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           languages: python
           # Python is interpreted; skip autobuild to avoid "No source code seen" failures
           build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2

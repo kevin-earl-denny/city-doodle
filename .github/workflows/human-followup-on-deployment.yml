@@ -16,24 +16,42 @@ on:
       - '.env.example'
       - '**/.env.example'
 
+concurrency:
+  # Each run diffs only its own push, so every pending run must be kept
+  # (default keeps one and cancels the rest, which would skip a ticket).
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
 permissions:
   contents: read
 
 jobs:
   create-human-followup:
+    permissions:
+      contents: read
     name: Create HUMAN follow-up ticket
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     if: github.event.before != '0000000000000000000000000000000000000000'
+    # Event values go through env, never ${{ }} inside run: (script injection).
+    env:
+      BEFORE_SHA: ${{ github.event.before }}
+      AFTER_SHA: ${{ github.sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          fetch-depth: 2
+          # Full history: a multi-commit push needs BEFORE_SHA, which a shallow
+          # clone wouldn't have.
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Get changed files
         id: changed
         run: |
-          FILES=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" 2>/dev/null || true)
+          # No error suppression: an unreadable diff must fail, not skip the ticket.
+          FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")
           echo "changed<<EOF" >> "$GITHUB_OUTPUT"
           echo "$FILES" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -57,8 +75,10 @@ jobs:
           python3 -m venv .vibe/.venv 2>/dev/null || true
           . .vibe/.venv/bin/activate
           pip install -q -e .
-          FILES=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" 2>/dev/null \
-            | grep -E 'fly\.toml|vercel\.json|\.env\.example' || true)
-          ARGS=""
-          for f in $FILES; do ARGS="$ARGS --files $f"; done
-          bin/ticket create-human-followup $ARGS
+          ALL_FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")
+          FILES=$(echo "$ALL_FILES" | grep -E 'fly\.toml|vercel\.json|\.env\.example' || true)
+          ARGS=()
+          while IFS= read -r f; do
+            [ -n "$f" ] && ARGS+=(--files "$f")
+          done <<< "$FILES"
+          bin/ticket create-human-followup "${ARGS[@]}"
