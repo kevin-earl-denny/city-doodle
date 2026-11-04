@@ -42,7 +42,11 @@ def test_tone_instructions_within_coderabbit_cap():
 def test_merge_bar_settings():
     # The merge bar counts CodeRabbit's APPROVED review; COMMENTED reviews can't count.
     reviews = CONFIG["reviews"]
-    assert reviews["request_changes_workflow"] is True
+    assert reviews["auto_approvals"]["enabled"] is True
+    assert "request_changes_workflow" not in reviews  # legacy alias; don't set both
+    # The PR author (every agent shares one account) can't force CodeRabbit's
+    # approval with `@coderabbitai approve` / `resolve` (CITY-677).
+    assert reviews["auto_approvals"]["allow_author_approval"] is False
     assert reviews["auto_review"]["enabled"] is True
 
 

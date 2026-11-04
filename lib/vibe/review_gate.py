@@ -52,7 +52,9 @@ from dataclasses import dataclass, field
 
 REQUIRED_AGENT_REVIEWS = 2
 TRUSTED_LOGINS = frozenset({"kdenny"})
-CODERABBIT_LOGINS = frozenset({"coderabbitai[bot]", "coderabbitai"})
+# The REST login of CodeRabbit's GitHub App. Bare `coderabbitai` is an
+# organization, so it must never be trusted as CodeRabbit.
+CODERABBIT_LOGINS = frozenset({"coderabbitai[bot]"})
 VERDICTS = ("pass", "minor", "major")
 STATUS_CONTEXT = "review-gate"
 

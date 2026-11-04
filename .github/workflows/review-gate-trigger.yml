@@ -2,6 +2,11 @@
 # and a pull_request_review run uses the PR's own workflow files, so this
 # workflow does nothing but finish. Its `workflow_run` completion re-runs the
 # gate from the default branch. No permissions, no checkout, no PR code.
+#
+# GitHub runs this from the PR's merge ref (head merged into the current base),
+# so PRs opened before this file existed relay too, with no rebase (verified on
+# #466, CITY-677). A PR that conflicts with its base has a stale merge ref and
+# relays nothing until it's rebased; any PR comment still re-evaluates it.
 name: Review gate trigger
 
 on:

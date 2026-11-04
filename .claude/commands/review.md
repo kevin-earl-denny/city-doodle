@@ -124,7 +124,7 @@ Give each finding a `file:line`, the concrete failure scenario, and the fix.
 
 ### Step 6a: Your own branch: fix and push
 
-Fix the auto-fixable findings (90%+ confidence), flag trade-offs for the user, re-run Step 4, commit with explicit paths (`git add -- <paths>`, never `git add -A`), rebase on the PR base, and push with `git push --force-with-lease origin HEAD`. A push resets the review count: the new head needs fresh reviews.
+Fix the auto-fixable findings (90%+ confidence), flag trade-offs for the user, re-run Step 4, commit with explicit paths (`git add -- <paths>`, never `git add -A`), rebase on the PR base, and push with `git push --force-with-lease origin HEAD`. Then reply on each CodeRabbit thread you fixed, naming the pushed commit (don't resolve it, and never post `@coderabbitai approve`/`resolve`: see below). A push resets the review count: the new head needs fresh reviews.
 
 ### Step 6b: Someone else's PR: post an agent review
 
@@ -148,6 +148,7 @@ The required `review-gate` status (`lib/vibe/review_gate.py`) passes a PR when C
 - Reviewers are counted by **root id**: `<id>` and its subagents `<id>/...` are one reviewer, compared case-insensitively (`reviewer-b`, `Reviewer-B` and `reviewer-b/deep` are all `reviewer-b`). Only the latest review under a root counts, and a `major` from any of them blocks the head. Use your own session id as the root; subagents you spawn sign `<your id>/<role>`. The author's root (the `city-author` line in the PR body) never counts.
 - After a **pure rebase**, the author can carry agent reviews to the new head with a PR comment whose own line is `<!-- city-rebase-carry v1 from=<old full sha> to=<new full sha> -->`; the gate verifies it with `git patch-id --verbatim`. CodeRabbit approval never carries.
 - Check the result with `bin/vibe review-gate <n>`: it lists what counted and why the rest didn't.
+- **Never steer CodeRabbit's approval.** Every agent posts as the PR author's account, and a CodeRabbit APPROVED on the head passes the gate alone. Never type `@coderabbitai approve` or `@coderabbitai resolve`, and never resolve a CodeRabbit thread: reply on it (agree, disagree, or "fixed in <sha>") and let CodeRabbit resolve its own threads when it re-reviews. Put your own findings in your agent review.
 
 ## Related
 

@@ -17,7 +17,14 @@ reviews:
   profile: chill
   # CodeRabbit APPROVES once its comments are resolved. An APPROVED review on
   # the PR head is one of the two ways to clear the merge bar (CLAUDE.md).
-  request_changes_workflow: true
+  # (`auto_approvals.enabled` replaces the legacy `request_changes_workflow`.)
+  auto_approvals:
+    enabled: true
+    # Every agent posts as the PR author's account, so the author must not be
+    # able to force that approval with `@coderabbitai approve` / `resolve`
+    # (CITY-677). This doesn't stop the author from resolving CodeRabbit's
+    # threads by hand; /fixup and /review forbid that.
+    allow_author_approval: false
   high_level_summary: true
   poem: false
   auto_review:
