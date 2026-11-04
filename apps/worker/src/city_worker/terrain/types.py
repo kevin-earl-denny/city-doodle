@@ -55,10 +55,11 @@ class TerrainConfig:
     height_octaves: int = 6
     height_persistence: float = 0.5
     height_lacunarity: float = 2.0
-    # CITY-624: Compensated from 0.001 to preserve terrain character.
-    # Old: 0.001 * 80467.2 = ~80.5 noise units per tile.
-    # New: 0.3143 * 256 = ~80.5 noise units per tile (same appearance).
-    height_scale: float = 0.3143
+    # Base noise frequency in cycles per world unit.  0.01 * 256 = ~2.6
+    # cycles per tile, so landforms span several miles.  CITY-650: the old
+    # value (~80 cycles/tile) exceeded the 128-sample Nyquist limit (64) and
+    # turned the heightfield into speckle noise.
+    height_scale: float = 0.01
 
     # Water level threshold (0-1, normalized height below which is water)
     water_level: float = 0.35

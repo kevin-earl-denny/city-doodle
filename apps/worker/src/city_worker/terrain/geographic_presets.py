@@ -43,14 +43,13 @@ GEOGRAPHIC_PRESETS: dict[str, dict[str, Any]] = {
     # City built along a major river.  Lower water level exposes
     # more land, but rivers form more readily with a lower flow
     # threshold and longer minimum length.
-    # CITY-624: height_scale compensated from 0.0012 to pixel-space.
     "river_valley": {
         "water_level": 0.28,
         "min_river_length": 6,
         "beach_enabled": False,
         "bay_enabled": False,
         "barrier_islands_enabled": False,
-        "height_scale": 0.3772,  # was 0.0012 in meter-space
+        "height_scale": 0.012,
         "coastline_smoothing": 2,
     },
     # ── Lakefront ───────────────────────────────────────────────
@@ -70,14 +69,13 @@ GEOGRAPHIC_PRESETS: dict[str, dict[str, Any]] = {
     # No coastline.  Very low water level so almost all terrain is
     # above water.  Water features (rivers/lakes) are suppressed
     # because water_level < WATER_LEVEL_SUPPRESS_THRESHOLD (CITY-551).
-    # CITY-624: height_scale compensated from 0.0008 to pixel-space.
     "inland": {
         "water_level": 0.15,
         "beach_enabled": False,
         "bay_enabled": False,
         "barrier_islands_enabled": False,
         "min_river_length": 12,
-        "height_scale": 0.2515,  # was 0.0008 in meter-space
+        "height_scale": 0.008,
     },
     # ── Island ──────────────────────────────────────────────────
     # City on an island surrounded by water.  Higher water level
@@ -110,10 +108,9 @@ GEOGRAPHIC_PRESETS: dict[str, dict[str, Any]] = {
     # River delta / wetlands.  Low-lying terrain with many river
     # channels.  Water level is moderate but the land is very flat
     # (smaller height scale) so rivers spread out.
-    # CITY-624: height_scale compensated from 0.0006 to pixel-space.
     "delta": {
         "water_level": 0.33,
-        "height_scale": 0.1886,  # was 0.0006 in meter-space
+        "height_scale": 0.006,
         "height_persistence": 0.45,
         "min_river_length": 4,
         "beach_enabled": True,
@@ -141,10 +138,10 @@ def get_preset_overrides(geographic_setting: str) -> dict[str, Any]:
 # Each key maps to (min_value, max_value, jitter_fraction).
 # jitter_fraction is the ± proportion of the base value that the seed
 # can shift. E.g. 0.15 means the final value can be base ± 15%.
-# CITY-624: height_scale and bay_min_area ranges compensated to pixel-space.
+# CITY-624: bay_min_area range compensated to pixel-space.
 _VARIATION_RANGES: dict[str, tuple[float, float, float]] = {
     "water_level": (0.05, 0.65, 0.12),
-    "height_scale": (0.0943, 0.6287, 0.20),  # was (0.0003, 0.002)
+    "height_scale": (0.003, 0.02, 0.20),  # CITY-650: ~0.8-5 cycles/tile
     "height_persistence": (0.35, 0.60, 0.10),
     "height_lacunarity": (1.8, 2.3, 0.08),
     "coastline_smoothing": (1, 6, 0.30),
