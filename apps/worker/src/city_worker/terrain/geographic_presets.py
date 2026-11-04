@@ -23,20 +23,18 @@ GEOGRAPHIC_PRESETS: dict[str, dict[str, Any]] = {
         "barrier_islands_enabled": True,
     },
     # ── Bay / Harbor ────────────────────────────────────────────
-    # Protected natural harbor with prominent bay.  Lower concavity
-    # threshold so bays form more easily; slightly higher water
-    # creates more coastline for the bay to carve into.
-    # CITY-624: Area thresholds scaled from meter-space to pixel-space.
+    # Protected natural harbor with prominent bay (shaped by
+    # bay_harbor_mask).  Lower enclosure and area thresholds so more
+    # of the harbor's coves are detected as bays.
     "bay_harbor": {
         "water_level": 0.38,
         "beach_enabled": True,
         "beach_height_band": 0.02,
         "bay_enabled": True,
         "bay_min_concavity_angle": 25.0,
-        "bay_min_area": 0.004,  # was 400.0 in meter-space
+        "bay_min_area": 16.0,
         "bay_max_depth_ratio": 5.0,
-        "bay_harbor_min_area": 0.81,  # was 80000.0 in meter-space
-        "bay_erosion_strength": 1.2,
+        "bay_harbor_min_area": 2400.0,
         "barrier_islands_enabled": False,
     },
     # ── River Valley ────────────────────────────────────────────
@@ -138,7 +136,6 @@ def get_preset_overrides(geographic_setting: str) -> dict[str, Any]:
 # Each key maps to (min_value, max_value, jitter_fraction).
 # jitter_fraction is the ± proportion of the base value that the seed
 # can shift. E.g. 0.15 means the final value can be base ± 15%.
-# CITY-624: bay_min_area range compensated to pixel-space.
 _VARIATION_RANGES: dict[str, tuple[float, float, float]] = {
     "water_level": (0.05, 0.65, 0.12),
     "height_scale": (0.003, 0.02, 0.20),  # CITY-650: ~0.8-5 cycles/tile
@@ -148,7 +145,7 @@ _VARIATION_RANGES: dict[str, tuple[float, float, float]] = {
     "beach_height_band": (0.01, 0.04, 0.15),
     "beach_slope_max": (0.06, 0.18, 0.15),
     "bay_min_concavity_angle": (20.0, 60.0, 0.15),
-    "bay_min_area": (0.003, 0.02, 0.20),  # was (300.0, 2000.0)
+    "bay_min_area": (12.0, 80.0, 0.20),  # CITY-682: 3-20 cells
     "min_river_length": (3, 15, 0.25),
 }
 

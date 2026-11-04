@@ -2,16 +2,7 @@
 
 import pytest
 from city_worker.terrain import BayConfig, TerrainConfig, TerrainGenerator, extract_bays, generate_terrain_3x3
-from city_worker.terrain.bays import (
-    BayCandidate,
-    detect_bay_candidates,
-    _calculate_curvature,
-    _find_concave_regions,
-    _calculate_concavity_angle,
-    _generate_bay_shape,
-    _calculate_bay_depth_profile,
-    _classify_bay_size,
-)
+from city_worker.terrain.bays import _classify_bay_size
 from city_worker.terrain.barrier_islands import (
     BarrierIslandConfig,
     calculate_coastline_normal,
@@ -102,6 +93,12 @@ class TestHeightfieldGeneration:
             b = h[:, 1:].ravel() - h.mean()
             lag1 = (a * b).mean() / (a.std() * b.std())
             assert lag1 > min_lag1, f"scale={scale}: lag-1 autocorrelation {lag1:.2f}"
+
+    @pytest.mark.parametrize("tile_size, resolution", [(0, 64), (0.0, 64), (-1.0, 64), (256.0, 0)])
+    def test_heightfield_rejects_non_positive_size(self, tile_size, resolution):
+        """Degenerate tile geometry raises ValueError, not ZeroDivisionError."""
+        with pytest.raises(ValueError):
+            generate_heightfield(seed=1, tx=0, ty=0, tile_size=tile_size, resolution=resolution)
 
     def test_heightfield_deterministic(self):
         """Same parameters should produce identical heightfields."""
@@ -244,26 +241,38 @@ class TestGenerateTerrain3x3:
 class TestSeamlessBorders:
     """Tests for seamless border alignment between tiles."""
 
-    def test_adjacent_tiles_share_edge_values(self):
-        """Adjacent tiles should have matching values at shared edges."""
-        config = TerrainConfig(world_seed=42, tile_size=1000.0, resolution=32)
-        generator = TerrainGenerator(config)
+    @pytest.mark.parametrize("setting", ["coastal", "bay_harbor", "delta", "island"])
+    def test_no_seams_at_tile_borders(self, setting):
+        """Height jumps across tile borders look like ordinary sample steps.
 
-        result = generator.generate_3x3(center_tx=0, center_ty=0)
+        Border samples of adjacent tiles are one sample apart (tiles cover
+        [t*ts, t*ts + (res-1)*step]), so a seamless border jumps about as
+        much as any interior step.  Per-tile terrain edits that stop at the
+        tile edge (CITY-674: bay erosion) produced cliffs ~17x larger.
+        """
+        import numpy as np
 
-        # Get center and right neighbor
-        center_hf = result.center.heightfield
-        right_neighbor = result.neighbors[(1, 0)]
-        right_hf = right_neighbor.heightfield
+        from city_worker.terrain import apply_seed_variation
 
-        # The right edge of center should match left edge of right neighbor
-        # Due to continuous noise, values should be very similar
-        # (not exact due to discrete sampling, but close)
-        for i in range(len(center_hf)):
-            center_edge = center_hf[i][-1]
-            neighbor_edge = right_hf[i][0]
-            # Allow small tolerance due to cell-based sampling
-            assert abs(center_edge - neighbor_edge) < 0.2
+        kw = apply_seed_variation(setting, seed=42)
+        kw.update(world_seed=42, geographic_setting=setting, resolution=64)
+        result = TerrainGenerator(TerrainConfig(**kw)).generate_3x3(1, 1)
+        tiles = {(t.tx, t.ty): np.array(t.heightfield) for t in result.all_tiles()}
+
+        steps = np.concatenate(
+            [np.abs(np.diff(h, axis=ax)).ravel() for h in tiles.values() for ax in (0, 1)]
+        )
+        p99 = np.percentile(steps, 99)
+
+        jumps = []
+        for (tx, ty), h in tiles.items():
+            if (tx + 1, ty) in tiles:
+                jumps.append(np.abs(h[:, -1] - tiles[(tx + 1, ty)][:, 0]).max())
+            if (tx, ty + 1) in tiles:
+                jumps.append(np.abs(h[-1, :] - tiles[(tx, ty + 1)][0, :]).max())
+        assert max(jumps) <= 2.5 * p99, (
+            f"{setting}: border jump {max(jumps):.3f} vs interior p99 step {p99:.3f}"
+        )
 
 
 class TestWaterFeatures:
@@ -456,7 +465,6 @@ class TestNoisyCoastline:
             tile_x=0,
             tile_y=0,
             tile_size=256.0,
-            seed=42,
         )
         uncapped = extract_bays(**kwargs, config=BayConfig(max_bays=1000))
         capped = extract_bays(**kwargs, config=BayConfig(max_bays=2))
@@ -768,274 +776,110 @@ class TestBeachGeneration:
 
 
 class TestBayGeneration:
-    """Tests for bay generation along coastlines."""
+    """Tests for mask-based bay detection (CITY-682)."""
 
-    def test_curvature_calculation(self):
-        """Curvature should be positive for concave (bay) regions."""
+    @staticmethod
+    def _inlet_heightfield(depth: int = 20, width: int = 16):
+        """64x64 tile: land on the left, sea on the right, one U-shaped inlet."""
         import numpy as np
 
-        # Create a U-shaped coastline (concave)
-        points = []
-        for x in range(-10, 11):
-            y = x * x / 20  # Parabola opening upward
-            points.append((float(x), float(y)))
-
-        curvatures = _calculate_curvature(points, window_size=5)
-
-        # Middle points should have positive curvature (concave)
-        assert len(curvatures) == len(points)
-        # Center region should show positive curvature
-        center_curvatures = curvatures[8:13]  # Middle section
-        assert any(c > 0 for c in center_curvatures)
-
-    def test_find_concave_regions(self):
-        """Should detect concave regions in coastline."""
-        # Create alternating concave/convex shape
-        points = []
-        curvatures = [0.0, 0.0, 0.2, 0.3, 0.4, 0.3, 0.2, 0.0, -0.2, -0.3, 0.0, 0.0]
-        for i, c in enumerate(curvatures):
-            points.append((float(i), 0.0))
-
-        regions = _find_concave_regions(points, curvatures, min_curvature=0.1)
-
-        # Should find one concave region
-        assert len(regions) >= 1
-        start, apex, end = regions[0]
-        assert 2 <= start <= 3
-        assert 4 <= apex <= 5
-        assert 5 <= end <= 7
-
-    def test_concavity_angle_calculation(self):
-        """Concavity angle should reflect bay depth."""
-        # Wide shallow bay (small angle)
-        p_start_wide = (-10.0, 0.0)
-        p_apex_wide = (0.0, -2.0)
-        p_end_wide = (10.0, 0.0)
-        angle_wide = _calculate_concavity_angle(p_start_wide, p_apex_wide, p_end_wide)
-
-        # Narrow deep bay (larger angle)
-        p_start_deep = (-3.0, 0.0)
-        p_apex_deep = (0.0, -10.0)
-        p_end_deep = (3.0, 0.0)
-        angle_deep = _calculate_concavity_angle(p_start_deep, p_apex_deep, p_end_deep)
-
-        assert 0 < angle_wide < 180
-        assert 0 < angle_deep < 180
-        # Deeper bay should have larger concavity angle
-        assert angle_deep > angle_wide
-
-    def test_bay_candidate_properties(self):
-        """BayCandidate should calculate correct properties."""
-        candidate = BayCandidate(
-            entrance_start=(0.0, 0.0),
-            entrance_end=(100.0, 0.0),
-            apex=(50.0, 50.0),
-            concavity_angle=90.0,
-            is_river_mouth=False,
-        )
-
-        assert candidate.entrance_width == 100.0
-        assert 50.0 <= candidate.depth <= 51.0  # Approximately 50 (distance from midpoint)
-
-    def test_generate_bay_shape_deterministic(self):
-        """Bay shape generation should be deterministic with same seed."""
-        import numpy as np
-
-        candidate = BayCandidate(
-            entrance_start=(0.0, 0.0),
-            entrance_end=(100.0, 0.0),
-            apex=(50.0, 50.0),
-            concavity_angle=90.0,
-        )
-
-        rng1 = np.random.default_rng(42)
-        rng2 = np.random.default_rng(42)
-
-        shape1 = _generate_bay_shape(candidate, rng1, detail_level=8)
-        shape2 = _generate_bay_shape(candidate, rng2, detail_level=8)
-
-        assert len(shape1) == len(shape2)
-        for p1, p2 in zip(shape1, shape2):
-            assert p1[0] == p2[0]
-            assert p1[1] == p2[1]
-
-    def test_generate_bay_shape_organic(self):
-        """Bay shape should have organic variations, not perfectly symmetric."""
-        import numpy as np
-
-        candidate = BayCandidate(
-            entrance_start=(0.0, 0.0),
-            entrance_end=(100.0, 0.0),
-            apex=(50.0, 50.0),
-            concavity_angle=90.0,
-        )
-
-        rng = np.random.default_rng(42)
-        shape = _generate_bay_shape(candidate, rng, detail_level=12)
-
-        # Check that shape forms a reasonable polygon
-        assert len(shape) >= 20  # Should have enough points
-
-        # Check that not all x values are symmetric about center
-        center_x = 50.0
-        left_side = [p for p in shape if p[0] < center_x]
-        right_side = [p for p in shape if p[0] > center_x]
-
-        # Both sides should have points
-        assert len(left_side) > 0
-        assert len(right_side) > 0
-
-    def test_bay_depth_profile(self):
-        """Depth should increase from entrance to apex."""
-        import numpy as np
-
-        bay_points = [
-            (0.0, 0.0),  # Entrance start
-            (25.0, 25.0),
-            (50.0, 50.0),  # Apex
-            (75.0, 25.0),
-            (100.0, 0.0),  # Entrance end
-        ]
-
-        rng = np.random.default_rng(42)
-        depths = _calculate_bay_depth_profile(
-            bay_points,
-            entrance_start=(0.0, 0.0),
-            entrance_end=(100.0, 0.0),
-            apex=(50.0, 50.0),
-            max_depth=10.0,
-            rng=rng,
-        )
-
-        assert len(depths) == len(bay_points)
-        # Apex point (index 2) should be deeper than entrance points
-        # Allow for some noise variation
-        avg_entrance_depth = (depths[0] + depths[4]) / 2
-        assert depths[2] > avg_entrance_depth * 0.5
+        hf = np.full((64, 64), 0.6)
+        hf[:, 44:] = 0.2  # open sea along the right edge
+        top = 32 - width // 2
+        hf[top:top + width, 44 - depth:44] = 0.2  # inlet cut into the land
+        return hf
 
     def test_classify_bay_size(self):
-        """Bay size classification should be based on area thresholds."""
-        config = BayConfig(
-            cove_max_area=50000.0,
-            harbor_min_area=200000.0,
-        )
+        """Bay size classification uses the configured area thresholds."""
+        config = BayConfig(cove_max_area=100.0, harbor_min_area=500.0)
+        assert _classify_bay_size(50.0, config) == "cove"
+        assert _classify_bay_size(300.0, config) == "bay"
+        assert _classify_bay_size(1000.0, config) == "harbor"
 
-        assert _classify_bay_size(10000.0, config) == "cove"
-        assert _classify_bay_size(100000.0, config) == "bay"
-        assert _classify_bay_size(500000.0, config) == "harbor"
-
-    def test_extract_bays_on_concave_coastline(self):
-        """Should extract bays from a concave coastline formation."""
-        import numpy as np
-
-        # Create a heightfield with a bay-like formation
-        # Water on right side, land on left with a concave indent (bay)
-        heightfield = np.ones((64, 64)) * 0.5  # Start with land
-
-        # Create water on the right side
-        heightfield[:, 40:] = 0.2
-
-        # Create a bay (concave indent) in the middle of the coastline
-        for i in range(20, 44):
-            # The bay extends into the land
-            depth = int(10 * np.sin((i - 20) * np.pi / 24))
-            if depth > 0:
-                heightfield[i, 40 - depth:40] = 0.2
-
+    def test_detects_inlet_as_bay(self):
+        """A U-shaped inlet in a straight coast is detected as one bay."""
         features = extract_bays(
-            heightfield=heightfield,
+            heightfield=self._inlet_heightfield(),
             water_level=0.35,
             tile_x=0,
             tile_y=0,
-            tile_size=1000.0,
-            seed=42,
-            config=BayConfig(
-                min_concavity_angle=30.0,
-                min_area=100.0,
-            ),
+            tile_size=256.0,
         )
+        assert len(features) == 1
+        bay = features[0]
+        assert bay.type == "bay"
+        assert bay.geometry["type"] == "Polygon"
+        for key in (
+            "area", "bay_size", "entrance_width", "depth", "depth_ratio",
+            "avg_water_depth", "max_water_depth", "concavity_angle", "is_river_mouth",
+        ):
+            assert key in bay.properties
+        assert bay.properties["bay_size"] in ("cove", "bay", "harbor")
+        assert bay.properties["entrance_width"] > 0
+        assert bay.properties["depth"] > 0
 
-        # May or may not find bays depending on exact geometry
-        # At minimum, the function should run without error
-        assert isinstance(features, list)
+    def test_bay_never_covers_land(self):
+        """Bay polygons only cover water cells, on real generated terrain."""
+        import numpy as np
+        from shapely.geometry import box, shape
+        from shapely.ops import unary_union
 
-    def test_extract_bays_river_mouth_detection(self):
-        """Bays at river mouths should be marked as such."""
+        from city_worker.terrain.noise import generate_heightfield
+
+        ts, res, wl = 256.0, 64, 0.45
+        cell = ts / res
+        checked = 0
+        for seed in range(8):
+            hf = generate_heightfield(seed, 1, 1, ts, res, scale=0.012)
+            features = extract_bays(hf, wl, 1, 1, ts)
+            land = unary_union([
+                box(ts + j * cell, ts + i * cell, ts + (j + 1) * cell, ts + (i + 1) * cell)
+                for i, j in zip(*np.nonzero(hf >= wl))
+            ])
+            for f in features:
+                overlap = shape(f.geometry).intersection(land).area
+                # Denoising may absorb a few single-cell islets into the bay
+                assert overlap <= 2 * cell * cell, f"seed {seed}: bay covers {overlap:.1f} of land"
+                checked += 1
+        assert checked > 0, "expected at least one bay across seeds"
+
+    def test_straight_coast_has_no_bays(self):
+        """A straight coastline has nothing for land to enclose."""
         import numpy as np
 
-        # Create a heightfield with a river flowing into a bay
-        heightfield = np.ones((64, 64)) * 0.5
+        hf = np.full((64, 64), 0.6)
+        hf[:, 40:] = 0.2
+        assert extract_bays(hf, 0.35, 0, 0, 256.0) == []
 
-        # Water on bottom
-        heightfield[50:, :] = 0.2
-
-        # Create a valley (river) leading to the water
-        for i in range(64):
-            heightfield[i, 30:34] = 0.3 + i * 0.003
-
-        # Create flow accumulation along the river
-        flow = np.ones((64, 64))
-        for i in range(64):
-            flow[i, 31:33] = 50 + i * 5
-
-        features = extract_bays(
-            heightfield=heightfield,
-            water_level=0.35,
-            tile_x=0,
-            tile_y=0,
-            tile_size=1000.0,
-            seed=42,
-            flow_accumulation=flow,
-            config=BayConfig(
-                min_concavity_angle=20.0,
-                min_area=50.0,
-            ),
-        )
-
-        # Check that features list is valid (may be empty for simple terrain)
-        assert isinstance(features, list)
-
-    def test_bay_feature_has_required_properties(self):
-        """Bay features should have all required properties."""
+    def test_enclosed_lake_is_not_a_bay(self):
+        """Water fully surrounded by land is a lake, not a bay."""
         import numpy as np
 
-        # Create terrain that will produce bays
-        heightfield = np.ones((64, 64)) * 0.5
-        heightfield[:, 40:] = 0.2
+        hf = np.full((64, 64), 0.6)
+        hf[24:40, 24:40] = 0.2
+        assert extract_bays(hf, 0.35, 0, 0, 256.0) == []
 
-        # Add concave formation
-        for i in range(20, 44):
-            depth = int(10 * np.sin((i - 20) * np.pi / 24))
-            if depth > 0:
-                heightfield[i, 40 - depth:40] = 0.2
+    def test_river_mouth_lowers_min_area(self):
+        """High flow at the bay's shore marks a river mouth with a lower area bar."""
+        import numpy as np
 
-        features = extract_bays(
-            heightfield=heightfield,
-            water_level=0.35,
-            tile_x=0,
-            tile_y=0,
-            tile_size=1000.0,
-            seed=42,
-            config=BayConfig(
-                min_concavity_angle=20.0,
-                min_area=50.0,
-            ),
-        )
+        hf = self._inlet_heightfield(depth=10, width=8)
+        flow = np.zeros_like(hf)
+        flow[32, 30:34] = 1000.0  # river reaching the inlet head
+        area = extract_bays(hf, 0.35, 0, 0, 256.0)[0].properties["area"]
 
-        for feature in features:
-            assert feature.type == "bay"
-            assert feature.geometry["type"] == "Polygon"
-            assert "coordinates" in feature.geometry
-            assert "area" in feature.properties
-            assert "bay_size" in feature.properties
-            assert feature.properties["bay_size"] in ["cove", "bay", "harbor"]
-            assert "entrance_width" in feature.properties
-            assert "depth" in feature.properties
-            assert "depth_ratio" in feature.properties
-            assert "avg_water_depth" in feature.properties
-            assert "max_water_depth" in feature.properties
-            assert "concavity_angle" in feature.properties
-            assert "is_river_mouth" in feature.properties
+        strict = BayConfig(min_area=area * 1.5, river_mouth_factor=2.0)
+        assert extract_bays(hf, 0.35, 0, 0, 256.0, config=strict) == []
+        bays = extract_bays(hf, 0.35, 0, 0, 256.0, flow_accumulation=flow, config=strict)
+        assert len(bays) == 1
+        assert bays[0].properties["is_river_mouth"] is True
+
+    def test_bay_generation_deterministic(self):
+        """Same terrain produces identical bays."""
+        hf = self._inlet_heightfield()
+        f1 = extract_bays(hf, 0.35, 0, 0, 256.0)
+        f2 = extract_bays(hf, 0.35, 0, 0, 256.0)
+        assert [f.geometry for f in f1] == [f.geometry for f in f2]
 
     def test_bay_disabled_produces_no_bays(self):
         """When bay_enabled is false, no bays should be generated."""
@@ -1045,104 +889,22 @@ class TestBayGeneration:
             resolution=32,
             bay_enabled=False,
         )
-        generator = TerrainGenerator(config)
-        result = generator.generate_3x3(center_tx=0, center_ty=0)
-
-        # Count bay features across all tiles
+        result = TerrainGenerator(config).generate_3x3(center_tx=0, center_ty=0)
         bay_count = sum(
             1 for tile in result.all_tiles() for f in tile.features if f.type == "bay"
         )
-
         assert bay_count == 0
 
-    def test_bay_generation_deterministic(self):
-        """Same seed should produce identical bay features."""
-        import numpy as np
-
-        heightfield = np.ones((64, 64)) * 0.5
-        heightfield[:, 40:] = 0.2
-        for i in range(20, 44):
-            depth = int(8 * np.sin((i - 20) * np.pi / 24))
-            if depth > 0:
-                heightfield[i, 40 - depth:40] = 0.2
-
-        features1 = extract_bays(
-            heightfield=heightfield,
-            water_level=0.35,
-            tile_x=0,
-            tile_y=0,
-            tile_size=1000.0,
-            seed=42,
-        )
-
-        features2 = extract_bays(
-            heightfield=heightfield,
-            water_level=0.35,
-            tile_x=0,
-            tile_y=0,
-            tile_size=1000.0,
-            seed=42,
-        )
-
-        assert len(features1) == len(features2)
-        for f1, f2 in zip(features1, features2):
-            assert f1.type == f2.type
-            assert f1.properties["area"] == f2.properties["area"]
-
-    def test_multiple_bay_sizes(self):
-        """Should support cove, bay, and harbor size classifications."""
-        config = BayConfig(
-            cove_max_area=100.0,
-            harbor_min_area=500.0,
-        )
-
-        # Test each size category
-        assert _classify_bay_size(50.0, config) == "cove"
-        assert _classify_bay_size(300.0, config) == "bay"
-        assert _classify_bay_size(1000.0, config) == "harbor"
-
-    def test_detect_bay_candidates_on_simple_coastline(self):
-        """Should detect bay candidates on a simple curved coastline."""
-        import numpy as np
-
-        # Create a simple bay-shaped coastline
-        coastline = []
-        for t in np.linspace(0, 2 * np.pi, 50):
-            # Figure-8 like shape with one concave region
-            x = np.cos(t) * 100
-            y = np.sin(t) * 50 + np.sin(2 * t) * 25
-            coastline.append((x, y))
-
-        candidates = detect_bay_candidates(
-            coastline_coords=coastline,
-            min_concavity_angle=30.0,
-        )
-
-        # Should find at least some candidates (or none for simple shapes)
-        assert isinstance(candidates, list)
-
     def test_terrain_generator_includes_bays(self):
-        """TerrainGenerator should include bay features when enabled."""
-        config = TerrainConfig(
-            world_seed=12345,  # Different seed for variety
-            tile_size=1000.0,
-            resolution=32,
-            bay_enabled=True,
-            bay_min_concavity_angle=30.0,
-            bay_min_area=100.0,
-        )
-        generator = TerrainGenerator(config)
-        result = generator.generate_3x3(center_tx=0, center_ty=0)
+        """Coastal worlds produce bay features through the full pipeline."""
+        from city_worker.terrain import apply_seed_variation
 
-        # Count all feature types
-        feature_counts = {}
-        for tile in result.all_tiles():
-            for f in tile.features:
-                feature_counts[f.type] = feature_counts.get(f.type, 0) + 1
+        kw = apply_seed_variation("bay_harbor", seed=42)
+        kw.update(world_seed=42, geographic_setting="bay_harbor", resolution=64)
+        result = TerrainGenerator(TerrainConfig(**kw)).generate_3x3(1, 1)
+        bays = [f for tile in result.all_tiles() for f in tile.features if f.type == "bay"]
+        assert len(bays) > 0
 
-        # Bay features may or may not exist depending on terrain
-        # But the generator should run without error
-        assert "coastline" in feature_counts or len(feature_counts) == 0
 
 class TestBarrierIslandGeneration:
     """Tests for barrier island generation along coastal areas."""
@@ -1683,6 +1445,7 @@ class TestGeographicPresets:
         for setting in ["inland", "island"]:
             overrides = get_preset_overrides(setting)
             overrides["world_seed"] = 42
+            overrides["geographic_setting"] = setting
             overrides["resolution"] = 16
             overrides["tile_size"] = 500.0
             configs[setting] = TerrainConfig(**overrides)
