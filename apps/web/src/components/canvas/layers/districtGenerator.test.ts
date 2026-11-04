@@ -372,13 +372,13 @@ describe("seedIdToDistrictType", () => {
 });
 
 describe("getEffectiveDistrictConfig", () => {
-  // Quarantined: CITY-672 (failing on main; hidden by `|| true` until CITY-652)
-  it.skip("returns default config when no options provided", () => {
+  it("returns default config when no options provided", () => {
     const config = getEffectiveDistrictConfig();
 
     expect(config.scaleSettings).toEqual(DEFAULT_SCALE_SETTINGS);
     expect(config.polygonPoints).toBe(8);
-    expect(config.organicFactor).toBe(0.3);
+    // Lowered from 0.3 so most districts take the rectangular path (CITY-369).
+    expect(config.organicFactor).toBe(0.15);
     expect(config.streetClass).toBe("local");
   });
 
@@ -416,8 +416,8 @@ describe("getEffectiveDistrictConfig", () => {
     expect(sprawlingConfig.streetSpacing).toBeGreaterThan(compactConfig.streetSpacing);
   });
 
-  // Quarantined: CITY-672 (failing on main; hidden by `|| true` until CITY-652)
-  it.skip("respects explicit size overrides over calculated values", () => {
+  // CITY-333: an explicit size (drag-to-size) is exact, so min and max collapse to it.
+  it("pins min and max to an explicit size", () => {
     const config = getEffectiveDistrictConfig({
       size: 999,
       minSize: 888,
@@ -430,6 +430,21 @@ describe("getEffectiveDistrictConfig", () => {
     });
 
     expect(config.size).toBe(999);
+    expect(config.minSize).toBe(999);
+    expect(config.maxSize).toBe(999);
+  });
+
+  it("respects explicit min and max sizes when no size is given", () => {
+    const config = getEffectiveDistrictConfig({
+      minSize: 888,
+      maxSize: 1111,
+      scaleSettings: {
+        blockSizeMeters: 100,
+        districtSizeMeters: 3200,
+        sprawlCompact: 0.5,
+      },
+    });
+
     expect(config.minSize).toBe(888);
     expect(config.maxSize).toBe(1111);
   });

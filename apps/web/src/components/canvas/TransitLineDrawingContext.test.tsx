@@ -24,7 +24,7 @@ function createWrapper(props?: {
     lineProperties: { name: string; color: string; type: "subway" | "rail" },
     lineId: string | null
   ) => void;
-  existingLineCount?: number;
+  existingLineNames?: string[];
 }) {
   return ({ children }: { children: ReactNode }) => (
     <TransitLineDrawingProvider {...props}>{children}</TransitLineDrawingProvider>
@@ -69,7 +69,7 @@ describe("TransitLineDrawingContext", () => {
   describe("startDrawing", () => {
     it("should set isDrawing to true and initialize default properties", () => {
       const { result } = renderHook(() => useTransitLineDrawing(), {
-        wrapper: createWrapper({ existingLineCount: 0 }),
+        wrapper: createWrapper({ existingLineNames: [] }),
       });
 
       act(() => {
@@ -84,10 +84,10 @@ describe("TransitLineDrawingContext", () => {
       });
     });
 
-    // Quarantined: CITY-670 (failing on main; hidden by `|| true` until CITY-652)
-    it.skip("should use existing line count for naming", () => {
+    // CITY-289: the default name is the first unused "Line N", not count + 1.
+    it("should name the line after the existing ones", () => {
       const { result } = renderHook(() => useTransitLineDrawing(), {
-        wrapper: createWrapper({ existingLineCount: 3 }),
+        wrapper: createWrapper({ existingLineNames: ["Line 1", "Line 2", "Line 3"] }),
       });
 
       act(() => {
@@ -95,6 +95,18 @@ describe("TransitLineDrawingContext", () => {
       });
 
       expect(result.current.state.lineProperties?.name).toBe("Line 4");
+    });
+
+    it("should reuse a freed line name after a deletion", () => {
+      const { result } = renderHook(() => useTransitLineDrawing(), {
+        wrapper: createWrapper({ existingLineNames: ["Line 1", "Line 3"] }),
+      });
+
+      act(() => {
+        result.current.startDrawing();
+      });
+
+      expect(result.current.state.lineProperties?.name).toBe("Line 2");
     });
   });
 

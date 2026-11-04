@@ -71,8 +71,7 @@ describe("BuildView", () => {
     expect(screen.getByTitle("City Needs - Click for details")).toBeInTheDocument();
   });
 
-  // Quarantined: CITY-669 (failing on main; hidden by `|| true` until CITY-652)
-  it.skip("calls onToolChange when tool is selected", () => {
+  it("calls onToolChange when tool is selected", () => {
     const onToolChange = vi.fn();
     renderBuildView(
       <BuildView onToolChange={onToolChange}>
@@ -80,8 +79,24 @@ describe("BuildView", () => {
       </BuildView>
     );
 
-    fireEvent.click(screen.getByLabelText("Draw Neighborhood"));
-    expect(onToolChange).toHaveBeenCalledWith("draw");
+    fireEvent.click(screen.getByLabelText("Draw City Limits"));
+    expect(onToolChange).toHaveBeenCalledWith("city-limits");
+  });
+
+  // CITY-564: neighborhoods can't be drawn until a city exists.
+  it("gates the neighborhood tool until a city exists", () => {
+    const onToolChange = vi.fn();
+    renderBuildView(
+      <BuildView onToolChange={onToolChange}>
+        <div>Content</div>
+      </BuildView>
+    );
+
+    const neighborhood = screen.getByLabelText("Draw Neighborhood");
+    expect(neighborhood).toBeDisabled();
+    expect(neighborhood).toHaveAttribute("title", "Draw city limits first");
+    fireEvent.click(neighborhood);
+    expect(onToolChange).not.toHaveBeenCalled();
   });
 
   it("calls onCityNeedsClick when city needs is clicked", () => {
