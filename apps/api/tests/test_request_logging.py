@@ -335,6 +335,81 @@ async def test_unhandled_db_error_on_request_line_is_redacted(shipped):
     assert "DETAIL: [redacted]" in line["exc_traceback"]
 
 
+UUID_SECRET = "tok-SECRETSESSION-123"
+
+
+def _asyncpg_uuid_bind_error():
+    """What SQLAlchemy raises when a str that isn't a UUID is bound to a UUID param.
+
+    Built the way asyncpg builds it: pgproto's UUID codec raises
+    `ValueError: invalid UUID '<value>': ...`, and asyncpg chains that under
+    `DataError: invalid input for query argument $1: '<value>' (...)`. SQLAlchemy's
+    hide_parameters hides `[parameters]` but not these chained messages (CITY-686).
+    """
+    import asyncpg
+    from asyncpg.pgproto.pgproto import UUID
+    from sqlalchemy.dialects.postgresql.asyncpg import AsyncAdapt_asyncpg_dbapi
+    from sqlalchemy.exc import DBAPIError
+
+    try:
+        try:
+            UUID(UUID_SECRET)
+        except ValueError as codec_error:
+            raise asyncpg.exceptions.DataError(
+                f"invalid input for query argument $1: {UUID_SECRET!r} ({codec_error})"
+            ) from codec_error
+    except asyncpg.exceptions.DataError as driver:
+        try:
+            raise AsyncAdapt_asyncpg_dbapi.Error(str(driver)) from driver
+        except AsyncAdapt_asyncpg_dbapi.Error as adapted:
+            exc = DBAPIError.instance(
+                "SELECT * FROM sessions WHERE sessions.user_id = $1::UUID",
+                (UUID_SECRET,),
+                adapted,
+                AsyncAdapt_asyncpg_dbapi.Error,
+                hide_parameters=True,
+            )
+            exc.__cause__ = adapted
+    tb = "".join(__import__("traceback").format_exception(exc))
+    assert f"invalid UUID {UUID_SECRET!r}" in tb  # the leak being guarded
+    return exc
+
+
+@pytest.mark.asyncio
+async def test_asyncpg_uuid_bind_value_never_ships(shipped):
+    """CITY-686: the chained `invalid UUID '<value>'` line is redacted from tracebacks."""
+    from sqlalchemy.exc import DBAPIError
+
+    from city_api.main import dbapi_error_handler
+
+    exc = _asyncpg_uuid_bind_error()
+    try:
+        raise exc
+    except DBAPIError:
+        response = await dbapi_error_handler(_request("/worlds"), exc)
+        logging.getLogger("some.library").exception("lookup failed")
+    assert response.status_code == 503
+
+    app = FastAPI()
+    app.add_middleware(RequestLoggingMiddleware)
+
+    @app.get("/worlds")
+    async def worlds():
+        raise _asyncpg_uuid_bind_error()
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://t") as c:
+        assert (await c.get("/worlds")).status_code == 500
+
+    raw, events = shipped()
+    assert UUID_SECRET not in raw
+    tracebacks = [e["exc_traceback"] for e in events if e.get("exc_traceback")]
+    assert len(tracebacks) == 2
+    for tb in tracebacks:
+        assert "ValueError: invalid UUID [redacted]" in tb
+        assert "invalid input for query argument $1: [redacted]" in tb
+
+
 def test_api_engine_hides_sql_parameters():
     from city_api.database import get_engine
 

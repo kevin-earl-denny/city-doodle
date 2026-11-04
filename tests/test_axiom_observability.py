@@ -380,6 +380,23 @@ def test_configure_holds_httpx_at_warning(clean_root):
         ),
         ("[SQL: SELECT 1 WHERE token = $1]\n[parameters: ('sess_abc',)]", "sess_abc"),
         ("invalid input for query argument $1: 'sess_abc' (expected uuid)", "sess_abc"),
+        # CITY-686: the chained asyncpg codec error quotes the value again.
+        (
+            "ValueError: invalid UUID 'sess_abc': length must be between 32..36 characters",
+            "sess_abc",
+        ),
+        ('invalid input syntax for type uuid: "sess_abc"', "sess_abc"),
+        ('invalid input value for enum cityclassification: "sess_abc"', "sess_abc"),
+        (
+            'ValueError: invalid UUID "it\'s-sess_abc": length must be between 32..36',
+            "sess_abc",
+        ),
+        ("ValueError: invalid UUID b'sess_abc': decodes to more than 16 bytes", "sess_abc"),
+        ('value "4242424242" is out of range for type integer', "4242424242"),
+        ('malformed array literal: "{sess_abc"', "sess_abc"),
+        ('malformed range literal: "[sess_abc"', "sess_abc"),
+        ('date/time field value out of range: "2026-02-30 sess_abc"', "sess_abc"),
+        ('invalid value "sess" for "YYYY"', "sess"),
         ("Key (owner_id)=(user-7) is not present in table users", "user-7"),
         (
             "1 validation error\n  [type=string_type, input_value='bob@x.io', input_type=str]",
@@ -391,6 +408,29 @@ def test_redact_sensitive_scrubs_db_values(text, secret):
     out = obs.redact_sensitive(text)
     assert secret not in out
     assert out.splitlines()[0].split()[0] == text.splitlines()[0].split()[0]
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # CITY-686 review: only the quoted value goes; the rest of the line stays.
+        (
+            "ValueError: invalid UUID 'tok-1': length must be between 32..36 characters",
+            "ValueError: invalid UUID [redacted]: length must be between 32..36 characters",
+        ),
+        (
+            "Rejected X-User-Id header: invalid UUID format, falling back (request_id=abc123)",
+            "Rejected X-User-Id header: invalid UUID format, falling back (request_id=abc123)",
+        ),
+        (
+            'invalid value "SECR" for "YYYY" (to_date)',
+            'invalid value [redacted] for "YYYY" (to_date)',
+        ),
+        ("the value is fine", "the value is fine"),
+    ],
+)
+def test_redact_sensitive_keeps_the_rest_of_the_line(text, expected):
+    assert obs.redact_sensitive(text) == expected
 
 
 def test_formatter_redacts_message_exception_and_traceback():
