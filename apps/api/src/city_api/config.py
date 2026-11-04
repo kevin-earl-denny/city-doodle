@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # Auth mode: "dev" uses X-User-Id header, "production" uses Bearer token
     auth_mode: str = "dev"
 
+    # World Brief (AI terrain prompt, CITY-659). Endpoint returns 503 when unset.
+    anthropic_api_key: str | None = None
+    brief_model: str = "claude-opus-5-5"
+    brief_effort: str = "low"
+    brief_rate_limit_per_minute: int = 8
+
     # CORS configuration
     frontend_url: str = "http://localhost:5173"
     cors_origins: list[str] = [

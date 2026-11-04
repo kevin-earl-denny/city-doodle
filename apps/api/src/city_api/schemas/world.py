@@ -71,6 +71,24 @@ class WorldSettings(BaseModel):
         le=2.0,
         description="Multiplier for beach width (0.5 = narrow, 2.0 = wide)",
     )
+    # Terrain hints from the World Brief (CITY-659). None = let the seed decide.
+    # Angles use the engine's mask convention: 0 = east, 90 = south (screen +y).
+    water_direction_deg: float | None = Field(
+        default=None,
+        ge=0.0,
+        lt=360.0,
+        description="Direction of open water from the city centre (0=E, 90=S, 180=W, 270=N)",
+    )
+    river_axis_deg: float | None = Field(
+        default=None,
+        ge=0.0,
+        lt=180.0,
+        description="Undirected river axis for river valleys (0=E-W, 90=N-S)",
+    )
+    relief: Literal["flat", "rolling", "hilly", "mountainous"] | None = Field(
+        default=None,
+        description="Overall terrain roughness",
+    )
 
 
 class WorldCreate(BaseModel):
