@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # LISTEN/NOTIFY configuration
     # Fallback poll interval when using LISTEN/NOTIFY (safety-net only).
     listen_timeout_seconds: float = 60.0
+    # Direct (non-pooled) connection for LISTEN (CITY-701). PgBouncer in
+    # transaction mode, e.g. Neon's "-pooler" endpoint, silently drops LISTEN.
+    # When unset, DATABASE_URL is used with "-pooler" stripped from a Neon host.
+    listen_database_url: str | None = None
 
     # Logging
     log_level: str = "info"

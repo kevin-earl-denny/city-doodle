@@ -8,8 +8,15 @@ from uuid import uuid4
 import pytest
 
 from city_worker.config import Settings
+from city_worker.config import settings as worker_settings
 from city_worker.models import JobStatus, JobType
-from city_worker.runner import JobRunner, _make_asyncpg_dsn
+from city_worker.runner import (
+    JobRunner,
+    _dsn_host,
+    _listen_dsn,
+    _make_asyncpg_dsn,
+    _strip_neon_pooler,
+)
 
 # Runner methods that touch the database; handlers call these, so unit tests
 # stub them all (CITY-626 added progress/status writes inside the handlers).
@@ -563,6 +570,180 @@ def test_shutdown_sets_notify_event():
 
     assert runner._shutdown is True
     assert runner._notify_event.is_set()
+
+
+# ============================================================================
+# LISTEN endpoint + wake path (CITY-701)
+# ============================================================================
+
+NEON_POOLED = (
+    "postgresql+asyncpg://app:s3cret@ep-cool-river-123456-pooler.c-4.us-east-1.aws.neon.tech"
+    "/neondb?sslmode=require"
+)
+
+
+def test_strip_neon_pooler_rewrites_host_only():
+    assert _strip_neon_pooler(NEON_POOLED) == (
+        "postgresql+asyncpg://app:s3cret@ep-cool-river-123456.c-4.us-east-1.aws.neon.tech"
+        "/neondb?sslmode=require"
+    )
+
+
+def test_strip_neon_pooler_keeps_port_and_ignores_password():
+    url = "postgresql://u:pw-pooler.x@ep-a-1-pooler.us-east-2.aws.neon.tech:5432/db"
+    assert (
+        _strip_neon_pooler(url)
+        == "postgresql://u:pw-pooler.x@ep-a-1.us-east-2.aws.neon.tech:5432/db"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql+asyncpg://localhost/city_doodle",
+        "postgresql://u:p@ep-a-1.c-4.us-east-1.aws.neon.tech/db",  # already direct
+        "postgresql://u:p@db.internal:5432/db?sslmode=disable",
+        "not a url",
+    ],
+)
+def test_strip_neon_pooler_leaves_other_urls_alone(url):
+    assert _strip_neon_pooler(url) == url
+
+
+def test_listen_dsn_derives_direct_endpoint_from_pooled_url():
+    assert _listen_dsn(NEON_POOLED) == (
+        "postgresql://app:s3cret@ep-cool-river-123456.c-4.us-east-1.aws.neon.tech/neondb?ssl=require"
+    )
+
+
+def test_listen_dsn_prefers_explicit_listen_url():
+    explicit = "postgresql://listener:pw@direct.example.com/db?sslmode=require"
+    assert (
+        _listen_dsn(NEON_POOLED, explicit)
+        == "postgresql://listener:pw@direct.example.com/db?ssl=require"
+    )
+
+
+def test_dsn_host_has_no_credentials():
+    host = _dsn_host(_listen_dsn(NEON_POOLED))
+    assert host == "ep-cool-river-123456.c-4.us-east-1.aws.neon.tech"
+    assert "s3cret" not in host
+
+
+def test_settings_listen_database_url_defaults_to_none():
+    assert Settings().listen_database_url is None
+
+
+@contextmanager
+def _loop_harness(runner, listen_timeout):
+    """Run JobRunner.run() with the DB-facing pieces stubbed out."""
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(worker_settings, "listen_timeout_seconds", listen_timeout))
+        for name in ("_connect_listen", "_close_listen", "_ensure_listen", "_reclaim_stuck_jobs"):
+            stack.enter_context(patch.object(runner, name, new_callable=AsyncMock))
+        stack.enter_context(patch.object(runner, "_wait_for_active_jobs", new_callable=AsyncMock))
+        stack.enter_context(patch.object(runner, "_setup_signal_handlers"))
+        yield
+
+
+async def _stop(runner, task):
+    runner._handle_shutdown()
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_loop_drains_immediately_at_startup():
+    runner = JobRunner()
+    polls = []
+
+    async def poll():
+        polls.append(runner._wake_reason)
+        return False
+
+    with (
+        _loop_harness(runner, listen_timeout=30.0),
+        patch.object(runner, "_poll_and_execute", side_effect=poll),
+    ):
+        task = asyncio.create_task(runner.run())
+        await asyncio.sleep(0.05)
+        assert polls == ["startup"]
+        await _stop(runner, task)
+
+
+@pytest.mark.asyncio
+async def test_loop_wakes_on_notify_without_waiting_for_fallback_poll():
+    runner = JobRunner()
+    poll_times = []
+
+    async def poll():
+        poll_times.append((asyncio.get_running_loop().time(), runner._wake_reason))
+        return False
+
+    with (
+        _loop_harness(runner, listen_timeout=30.0),
+        patch.object(runner, "_poll_and_execute", side_effect=poll),
+    ):
+        task = asyncio.create_task(runner.run())
+        await asyncio.sleep(0.05)  # startup drain done, now waiting (30 s timeout)
+        notified_at = asyncio.get_running_loop().time()
+        runner._on_notify(MagicMock(), 1, "new_job", "")
+        await asyncio.sleep(0.05)
+        await _stop(runner, task)
+
+    woke = [(t, why) for t, why in poll_times if t >= notified_at]
+    assert woke, "loop did not poll after NOTIFY"
+    assert woke[0][1] == "notify"
+    assert woke[0][0] - notified_at < 0.5
+
+
+@pytest.mark.asyncio
+async def test_notify_during_drain_is_not_lost():
+    """A NOTIFY that lands while draining must trigger another drain at once.
+
+    Before CITY-701 the event was cleared after the drain, right before
+    waiting, so this notification was dropped and the job waited for the
+    fallback poll.
+    """
+    runner = JobRunner()
+    calls = []
+
+    async def poll():
+        calls.append(runner._wake_reason)
+        if len(calls) == 1:
+            # The API commits a job and NOTIFYs just after our empty claim
+            runner._on_notify(MagicMock(), 1, "new_job", "")
+        return False
+
+    with (
+        _loop_harness(runner, listen_timeout=30.0),
+        patch.object(runner, "_poll_and_execute", side_effect=poll),
+    ):
+        task = asyncio.create_task(runner.run())
+        await asyncio.sleep(0.1)
+        await _stop(runner, task)
+
+    assert calls[:2] == ["startup", "notify"]
+
+
+@pytest.mark.asyncio
+async def test_fallback_poll_wake_is_labelled():
+    runner = JobRunner()
+    reasons = []
+
+    async def poll():
+        reasons.append(runner._wake_reason)
+        return False
+
+    with (
+        _loop_harness(runner, listen_timeout=0.05),
+        patch.object(runner, "_poll_and_execute", side_effect=poll),
+    ):
+        task = asyncio.create_task(runner.run())
+        await asyncio.sleep(0.2)
+        await _stop(runner, task)
+
+    assert reasons[0] == "startup"
+    assert "fallback_poll" in reasons[1:]
 
 
 @pytest.mark.asyncio
