@@ -27,4 +27,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_worlds_user_id", table_name="worlds")
+    # No-op (CITY-685). Migration 002 creates ix_worlds_user_id unconditionally
+    # and drops it in its own downgrade, so the upgrade above never creates it
+    # in a real chain (IF NOT EXISTS). Dropping it here made 002's downgrade fail
+    # with 'index "ix_worlds_user_id" does not exist'.
+    pass
