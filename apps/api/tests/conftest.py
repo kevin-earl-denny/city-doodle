@@ -4,16 +4,16 @@ import os
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
-import pytest
-import pytest_asyncio
-
 # Import all models so they are registered with Base.metadata
 # This ensures tables are created during test setup
 import city_api.models  # noqa: F401
+import pytest
+import pytest_asyncio
 from city_api.database import Base, get_db
 from city_api.main import app
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool, StaticPool
 
@@ -81,15 +81,39 @@ async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+def _postgres_enum_types() -> list[PG_ENUM]:
+    """Every Postgres ENUM the models use, deduplicated by type name.
+
+    The models declare them with create_type=False because Alembic migrations
+    own the types in real databases, so create_all/drop_all skip them. Tests
+    build the schema with create_all, so they must create and drop the types.
+    """
+    enums: dict[str, PG_ENUM] = {}
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            if isinstance(column.type, PG_ENUM) and column.type.name:
+                enums.setdefault(column.type.name, column.type)
+    return list(enums.values())
+
+
 @pytest.fixture(scope="session", autouse=True)
 async def setup_test_db():
     """Create test database tables once per session."""
     engine, _ = get_test_engine()
     async with engine.begin() as conn:
+        if not is_sqlite:
+            # Start clean even if a previous run died before teardown.
+            await conn.run_sync(Base.metadata.drop_all)
+            for enum in _postgres_enum_types():
+                await conn.run_sync(lambda sync_conn, e=enum: e.drop(sync_conn, checkfirst=True))
+                await conn.run_sync(lambda sync_conn, e=enum: e.create(sync_conn, checkfirst=False))
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+        if not is_sqlite:
+            for enum in _postgres_enum_types():
+                await conn.run_sync(lambda sync_conn, e=enum: e.drop(sync_conn, checkfirst=True))
 
 
 @pytest.fixture(autouse=True)
