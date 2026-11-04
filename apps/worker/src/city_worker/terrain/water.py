@@ -325,11 +325,17 @@ def _cells_to_polygon(
     mask = np.zeros((resolution, resolution), dtype=bool)
     mask[rows, cols] = True
 
+    # Callers may pass 8-connected cells (beach water fringes) that touch only
+    # at corners. Fill one bridging cell per corner-only contact so the cells
+    # form a real band; joining them with a hairline buffer instead leaves
+    # needle-thin necks that simplify collapses into a sliver.
+    diag_down = mask[:-1, :-1] & mask[1:, 1:] & ~mask[:-1, 1:] & ~mask[1:, :-1]
+    diag_up = mask[:-1, 1:] & mask[1:, :-1] & ~mask[:-1, :-1] & ~mask[1:, 1:]
+    mask[:-1, 1:] |= diag_down
+    mask[:-1, :-1] |= diag_up
+
     try:
         geom = _mask_to_geometry(mask, tile_x, tile_y, tile_size, cell_size)
-        # Callers may pass 8-connected cells (beach water fringes) that touch
-        # only at corners; a hairline buffer joins them into one polygon.
-        geom = geom.buffer(cell_size * 0.01, join_style="mitre")
         if isinstance(geom, MultiPolygon):
             geom = max(geom.geoms, key=lambda g: g.area)
         geom = geom.simplify(cell_size * 0.75, preserve_topology=True)

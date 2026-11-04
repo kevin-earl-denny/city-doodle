@@ -22,6 +22,7 @@ from city_worker.terrain.bays import _classify_bay_size
 from city_worker.terrain.noise import SeededNoise, apply_erosion, generate_heightfield
 from city_worker.terrain.types import TileCoord
 from city_worker.terrain.water import (
+    _cells_to_polygon,
     calculate_flow_accumulation,
     extract_beaches,
     extract_coastlines,
@@ -368,13 +369,16 @@ class TestWaterFeatures:
         assert coords1 == coords2
 
     def test_concave_coastline_preserves_bay(self):
-        """Concave hull should preserve bay-like indentations."""
+        """An L-shaped island keeps its notch as an L-shaped hole in the water."""
         import numpy as np
+        from shapely.geometry import Polygon
 
         # Create L-shaped land mass (has concavity)
         heightfield = np.zeros((32, 32))
         heightfield[4:28, 4:16] = 0.6  # vertical bar
         heightfield[16:28, 4:28] = 0.6  # horizontal bar
+        land_cells = int((heightfield > 0.35).sum())
+        cell = 1000.0 / 32
 
         features = extract_coastlines(
             heightfield=heightfield,
@@ -384,11 +388,81 @@ class TestWaterFeatures:
             tile_size=1000.0,
         )
 
-        assert len(features) > 0
-        poly_coords = features[0].geometry["coordinates"][0]
-        # The polygon should NOT be a simple rectangle (convex hull would be)
-        # An L-shape should have at least 5-6 unique vertices
-        assert len(poly_coords) >= 5
+        assert len(features) == 1
+        rings = features[0].geometry["coordinates"]
+        assert len(rings) == 2, "island should be a hole in the water polygon"
+        hole = Polygon(rings[1])
+        # A hull across the notch would add the 12x12-cell bay to the island
+        assert hole.area == pytest.approx(land_cells * cell * cell, rel=0.02)
+        assert len(rings[1]) >= 7  # six L corners plus the closing point
+
+    def test_coastline_snaps_to_tile_edges(self):
+        """Water touching the tile border reaches it exactly, even after fractal
+        displacement, so adjacent tiles meet with no seam (CITY-653)."""
+        import numpy as np
+        from shapely.geometry import Polygon
+
+        heightfield = np.zeros((32, 32))
+        heightfield[12:20, 12:20] = 0.6
+
+        features = extract_coastlines(
+            heightfield=heightfield,
+            water_level=0.35,
+            tile_x=1,
+            tile_y=2,
+            tile_size=1000.0,
+            fractal_seed=42,
+        )
+
+        assert len(features) == 1
+        exterior = Polygon(features[0].geometry["coordinates"][0])
+        assert exterior.bounds == (1000.0, 2000.0, 2000.0, 3000.0)
+        assert exterior.area == pytest.approx(1000.0 * 1000.0)
+
+    def test_coastline_all_water_tile_is_exact_square(self):
+        """An all-water tile is exactly the tile square; an all-land tile is empty."""
+        import numpy as np
+        from shapely.geometry import Polygon
+
+        water = extract_coastlines(
+            heightfield=np.zeros((32, 32)), water_level=0.35,
+            tile_x=1, tile_y=1, tile_size=256.0,
+        )
+        land = extract_coastlines(
+            heightfield=np.ones((32, 32)), water_level=0.35,
+            tile_x=1, tile_y=1, tile_size=256.0,
+        )
+
+        assert len(water) == 1
+        square = Polygon(water[0].geometry["coordinates"][0])
+        assert square.bounds == (256.0, 256.0, 512.0, 512.0)
+        assert square.area == pytest.approx(256.0 * 256.0)
+        assert land == []
+
+    def test_cells_to_polygon_joins_corner_touching_cells(self):
+        """8-connected cells (beach water fringes) come back as one polygon."""
+        cell = 1000.0 / 32
+        poly = _cells_to_polygon([(5, 5), (6, 6), (7, 7)], 0, 0, 1000.0, cell, 32)
+
+        assert poly is not None
+        assert poly.geom_type == "Polygon"
+        # Simplify turns the stair-step into a diagonal band, so area shrinks;
+        # what matters is that every cell is still covered by the one polygon.
+        from shapely.geometry import Point
+
+        for i, j in [(5, 5), (6, 6), (7, 7)]:
+            assert poly.contains(Point((j + 0.5) * cell, (i + 0.5) * cell))
+
+    def test_cells_to_polygon_traces_concave_outline(self):
+        """No chord across a concave shore: area matches the exact cell union."""
+        cell = 1000.0 / 32
+        cells = [(i, j) for i in range(4, 28) for j in range(4, 16)]
+        cells += [(i, j) for i in range(16, 28) for j in range(16, 28)]
+
+        poly = _cells_to_polygon(cells, 0, 0, 1000.0, cell, 32)
+
+        assert poly is not None
+        assert poly.area == pytest.approx(len(cells) * cell * cell, rel=0.02)
 
     def test_flow_accumulation(self):
         """Flow accumulation should concentrate in valleys."""
