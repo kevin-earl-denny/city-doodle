@@ -4,12 +4,11 @@ import logging
 from typing import Any
 
 import numpy as np
+import shapely
 from numpy.typing import NDArray
 from scipy.ndimage import binary_dilation, label
-from shapely import concave_hull
 from shapely.errors import GEOSException, TopologicalError
-from shapely.geometry import LineString, MultiPoint, MultiPolygon, Polygon
-from shapely.ops import unary_union
+from shapely.geometry import LineString, MultiPolygon, Polygon
 
 from city_worker.terrain.types import DEFAULT_LAKE_TYPE, LakeType, TerrainFeature
 
@@ -42,7 +41,7 @@ def _fractal_perturb_ring(
 
     for _it in range(iterations):
         new_pts: list[tuple[float, float]] = []
-        amp = amplitude * (0.5 ** _it)  # halve amplitude each iteration
+        amp = amplitude * (0.5**_it)  # halve amplitude each iteration
 
         for k in range(len(pts) - 1):
             x0, y0 = pts[k]
@@ -146,43 +145,36 @@ def extract_coastlines(
     # for ALL presets (CITY-632).
     water_mask = denoise_water_mask(heightfield < water_level)
 
-    # Find connected water regions using scipy connected-component
-    # labeling (CITY-625). This replaces the Python nested for-loop
-    # + flood fill with a single vectorized C call.
-    labeled, num_labels = label(water_mask, structure=_STRUCT_4CONN)
-
-    water_polygons = []
-    for lbl in range(1, num_labels + 1):
-        region_mask = labeled == lbl
-        region_size = int(region_mask.sum())
-        if region_size >= 4:  # Minimum size for a polygon
-            region_cells = list(zip(*np.where(region_mask)))
-            poly = _cells_to_polygon(region_cells, tile_x, tile_y, tile_size, cell_size, w)
-            if poly is not None and poly.is_valid:
-                water_polygons.append(poly)
-
-    if not water_polygons:
-        return []
-
-    # Merge overlapping polygons and simplify
-    merged = unary_union(water_polygons)
+    # Vectorize the whole mask at once as an exact union of cells
+    # (CITY-653). Every water body comes out together, with islands as
+    # holes and edges flush with the tile bounds. denoise_water_mask has
+    # already removed regions too small to keep.
+    merged = _mask_to_geometry(water_mask, tile_x, tile_y, tile_size, cell_size)
     if merged.is_empty:
         return []
 
-    # Light simplification (preserve concave detail)
+    # Simplify turns the cell stair-steps into straight diagonals
     smoothed = merged.simplify(cell_size * 1.2, preserve_topology=True)
 
     # Apply fractal perturbation for natural coastline look
     if fractal_amplitude > 0 and fractal_seed is not None:
         smoothed = _apply_fractal_to_geometry(smoothed, fractal_amplitude, fractal_seed)
 
-    # Convert to features. Thin regions that pass the cell-count denoise can
-    # still hull down to slivers of a few px²; drop anything smaller than the
-    # edge-region minimum so tile borders aren't lined with specks (CITY-647).
+    # Simplify and fractal displacement both pull vertices off the tile
+    # border. Snap them back so water meets the neighbouring tile's water
+    # with no gap.
+    smoothed = _snap_to_tile_edges(smoothed, tile_x, tile_y, tile_size, cell_size * 1.5)
+
+    # Convert to features. A region that passes the cell-count denoise can
+    # still simplify/snap down to a sliver of a few px²; drop anything smaller
+    # than the edge-region minimum so tile borders aren't lined with specks
+    # (CITY-647).
     min_area = _min_region_cells(h * w)[1] * cell_size * cell_size
     polys = [smoothed] if isinstance(smoothed, Polygon) else list(getattr(smoothed, "geoms", []))
     features = [
-        _polygon_to_feature(poly, "coastline") for poly in polys if poly.area >= min_area
+        _polygon_to_feature(poly, "coastline")
+        for poly in polys
+        if isinstance(poly, Polygon) and poly.area >= min_area
     ]
 
     return features
@@ -255,6 +247,63 @@ def _flood_fill(
     return cells
 
 
+def _mask_to_geometry(
+    mask: NDArray[np.bool_],
+    tile_x: int,
+    tile_y: int,
+    tile_size: float,
+    cell_size: float,
+) -> Polygon | MultiPolygon:
+    """Exact world-space union of the True cells in *mask*.
+
+    Each horizontal run of True cells becomes one box, so a few boxes per
+    row are unioned instead of one box per cell.
+    """
+    x0 = tile_x * tile_size
+    y0 = tile_y * tile_size
+    padded = np.zeros((mask.shape[0], mask.shape[1] + 2), dtype=np.int8)
+    padded[:, 1:-1] = mask
+    edges = np.diff(padded, axis=1)
+    # np.nonzero is row-major, so the k-th run start pairs with the k-th run end
+    rows, starts = np.nonzero(edges == 1)
+    _, ends = np.nonzero(edges == -1)
+    boxes = shapely.box(
+        x0 + starts * cell_size,
+        y0 + rows * cell_size,
+        x0 + ends * cell_size,
+        y0 + (rows + 1) * cell_size,
+    )
+    return shapely.union_all(boxes)
+
+
+def _snap_to_tile_edges(
+    geom: Polygon | MultiPolygon,
+    tile_x: int,
+    tile_y: int,
+    tile_size: float,
+    tolerance: float,
+) -> Polygon | MultiPolygon:
+    """Move vertices within *tolerance* of the tile border onto it and clamp
+    everything else inside the tile."""
+    x0, y0 = tile_x * tile_size, tile_y * tile_size
+    x1, y1 = x0 + tile_size, y0 + tile_size
+
+    def snap(coords: NDArray[np.float64]) -> NDArray[np.float64]:
+        out = coords.copy()
+        for col, lo, hi in ((0, x0, x1), (1, y0, y1)):
+            v = out[:, col]
+            v[np.abs(v - lo) < tolerance] = lo
+            v[np.abs(v - hi) < tolerance] = hi
+            np.clip(v, lo, hi, out=v)
+        return out
+
+    snapped = shapely.transform(geom, snap)
+    if not snapped.is_valid:
+        # Snapping can collapse thin slivers along the border into spikes
+        snapped = snapped.buffer(0)
+    return snapped
+
+
 def _cells_to_polygon(
     cells: list[tuple[int, int]],
     tile_x: int,
@@ -263,54 +312,40 @@ def _cells_to_polygon(
     cell_size: float,
     resolution: int,
 ) -> Polygon | None:
-    """Convert grid cells to a polygon preserving concave coastline detail.
+    """Convert grid cells to a polygon tracing their exact outline.
 
-    Uses Shapely's concave_hull (CITY-322) instead of convex_hull so that
-    bays, inlets, and headlands are retained in the output shape.
+    Replaces the concave hull over boundary cell centers (CITY-322), which
+    cut long straight chords across concave shorelines, stopped half a cell
+    short of the tile edge, and could not represent holes (CITY-653).
     """
     if len(cells) < 3:
         return None
 
-    # Build boundary by finding edge cells
-    cell_set = set(cells)
-    boundary_points = []
+    rows, cols = np.asarray(cells).T
+    mask = np.zeros((resolution, resolution), dtype=bool)
+    mask[rows, cols] = True
 
-    for i, j in cells:
-        # Check if this is an edge cell (has non-land neighbor)
-        for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            ni, nj = i + di, j + dj
-            if (ni, nj) not in cell_set:
-                # Convert to world coordinates
-                world_x = tile_x * tile_size + (j + 0.5) * cell_size
-                world_y = tile_y * tile_size + (i + 0.5) * cell_size
-                boundary_points.append((world_x, world_y))
-                break
-
-    if len(boundary_points) < 3:
-        return None
+    # Callers may pass 8-connected cells (beach water fringes) that touch only
+    # at corners. Fill one bridging cell per corner-only contact so the cells
+    # form a real band; joining them with a hairline buffer instead leaves
+    # needle-thin necks that simplify collapses into a sliver.
+    diag_down = mask[:-1, :-1] & mask[1:, 1:] & ~mask[:-1, 1:] & ~mask[1:, :-1]
+    diag_up = mask[:-1, 1:] & mask[1:, :-1] & ~mask[:-1, :-1] & ~mask[1:, 1:]
+    mask[:-1, 1:] |= diag_down
+    mask[:-1, :-1] |= diag_up
 
     try:
-        mp = MultiPoint(boundary_points)
-
-        # concave_hull with ratio=0.3 keeps most concave detail while
-        # avoiding degenerate geometry. ratio=0 is maximally concave,
-        # ratio=1 is the convex hull.
-        hull = concave_hull(mp, ratio=0.2)
-
-        if isinstance(hull, Polygon) and hull.is_valid and not hull.is_empty:
-            return hull
-
-        # Fallback: try convex hull for degenerate cases
-        hull = mp.convex_hull
-        if isinstance(hull, Polygon) and hull.is_valid:
-            return hull
-        elif hasattr(hull, "buffer"):
-            buffered = hull.buffer(cell_size * 0.5)
-            if isinstance(buffered, Polygon) and buffered.is_valid:
-                return buffered
+        geom = _mask_to_geometry(mask, tile_x, tile_y, tile_size, cell_size)
+        if isinstance(geom, MultiPolygon):
+            geom = max(geom.geoms, key=lambda g: g.area)
+        # 0.5 cell keeps one-cell-wide diagonal bands (beach fringes) intact;
+        # at 0.75 Douglas-Peucker collapses NE-SW staircases into slivers.
+        geom = geom.simplify(cell_size * 0.5, preserve_topology=True)
+        if isinstance(geom, Polygon) and geom.is_valid and not geom.is_empty:
+            return geom
         return None
     except (GEOSException, TopologicalError, ValueError) as e:
-        logger.warning("Failed to create polygon from boundary cells: %s", e)
+        logger.warning("Failed to create polygon from cells: %s", e)
         return None
 
 
@@ -364,10 +399,10 @@ def calculate_flow_accumulation(
         neighbours[k] = padded[ri : ri + h, ci : ci + w]
 
     # For each cell, find the direction of the lowest neighbour.
-    min_neighbour_idx = np.argmin(neighbours, axis=0)         # (h, w)
-    min_neighbour_val = np.take_along_axis(
-        neighbours, min_neighbour_idx[np.newaxis], axis=0
-    )[0]  # (h, w)
+    min_neighbour_idx = np.argmin(neighbours, axis=0)  # (h, w)
+    min_neighbour_val = np.take_along_axis(neighbours, min_neighbour_idx[np.newaxis], axis=0)[
+        0
+    ]  # (h, w)
 
     # Flat destination index for each cell (-1 = no outflow).
     dest_flat = np.full(h * w, -1, dtype=np.intp)
@@ -600,7 +635,11 @@ def extract_rivers(
     cell_size = tile_size / w
 
     # Use pre-computed flow accumulation if provided (CITY-508)
-    flow = flow_accumulation if flow_accumulation is not None else calculate_flow_accumulation(heightfield)
+    flow = (
+        flow_accumulation
+        if flow_accumulation is not None
+        else calculate_flow_accumulation(heightfield)
+    )
 
     # Find river cells (high flow, above water level for now)
     river_mask = (flow >= flow_threshold) & (heightfield >= water_level * 0.8)
@@ -705,10 +744,7 @@ def extract_rivers(
                             for di, dj in directions:
                                 ni, nj = ei + di, ej + dj
                                 if 0 <= ni < h and 0 <= nj < w:
-                                    if (
-                                        not visited[ni, nj]
-                                        and heightfield[ni, nj] < best_h
-                                    ):
+                                    if not visited[ni, nj] and heightfield[ni, nj] < best_h:
                                         best_h = heightfield[ni, nj]
                                         best_next = (ni, nj)
                             if best_next is None:
@@ -803,7 +839,9 @@ def extract_rivers(
                 # CITY-490: Interpolate per-vertex widths onto the
                 # smoothed line. Build cumulative-distance parameterisation
                 # of the original path, then sample at each smoothed vertex.
-                smoothed_widths = _interpolate_widths(coords, raw_widths, list(smoothed_line.coords))
+                smoothed_widths = _interpolate_widths(
+                    coords, raw_widths, list(smoothed_line.coords)
+                )
 
                 # CITY-683: delta detection needs the flow direction at the
                 # mouth. Take it from the dense smoothed curve (its last 6
@@ -813,7 +851,9 @@ def extract_rivers(
                 tail = smoothed[-6:]
                 mdx, mdy = tail[-1][0] - tail[0][0], tail[-1][1] - tail[0][1]
                 mag = (mdx * mdx + mdy * mdy) ** 0.5
-                mouth_direction = [round(mdx / mag, 4), round(mdy / mag, 4)] if mag > 1e-10 else None
+                mouth_direction = (
+                    [round(mdx / mag, 4), round(mdy / mag, 4)] if mag > 1e-10 else None
+                )
 
                 features.append(
                     TerrainFeature(
@@ -878,7 +918,9 @@ def _classify_water_body(
 
     # Check if water touches tile edge (likely ocean or large bay)
     visited_water = np.zeros_like(water_mask, dtype=bool)
-    water_cells = _flood_fill(water_mask, visited_water, water_neighbors[0][0], water_neighbors[0][1])
+    water_cells = _flood_fill(
+        water_mask, visited_water, water_neighbors[0][0], water_neighbors[0][1]
+    )
     water_cell_count = len(water_cells)
 
     # Check if water region touches tile edge
@@ -1117,9 +1159,7 @@ def extract_beaches(
 
             extended_cells = list(segment_cells) + water_fringe
 
-            poly = _cells_to_polygon(
-                extended_cells, tile_x, tile_y, tile_size, cell_size, w
-            )
+            poly = _cells_to_polygon(extended_cells, tile_x, tile_y, tile_size, cell_size, w)
             if poly is not None and poly.is_valid:
                 # CITY-546: Skip beaches that overlap a river buffer
                 if river_buffers:
@@ -1183,7 +1223,9 @@ def extract_beaches(
                                                 beach_type = "river"
                                                 break
                                         except (GEOSException, TopologicalError) as e:
-                                            logger.warning("Lake beach-river distance check failed: %s", e)
+                                            logger.warning(
+                                                "Lake beach-river distance check failed: %s", e
+                                            )
                                 break
                         except (GEOSException, TopologicalError) as e:
                             logger.warning("Beach-lake intersection check failed: %s", e)
@@ -1408,9 +1450,7 @@ def extract_lakes(
 
         region_cells = list(zip(*np.where(region_mask)))
 
-        poly = _cells_to_polygon(
-            region_cells, tile_x, tile_y, tile_size, cell_size, w
-        )
+        poly = _cells_to_polygon(region_cells, tile_x, tile_y, tile_size, cell_size, w)
         if poly is not None and poly.is_valid:
             lake_type, properties = _classify_lake_type(
                 poly,

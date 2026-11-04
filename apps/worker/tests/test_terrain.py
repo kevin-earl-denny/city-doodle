@@ -1,6 +1,7 @@
 """Tests for terrain generation module."""
 
 import pytest
+
 from city_worker.terrain import (
     BayConfig,
     TerrainConfig,
@@ -22,6 +23,7 @@ from city_worker.terrain.bays import _classify_bay_size
 from city_worker.terrain.noise import SeededNoise, apply_erosion, generate_heightfield
 from city_worker.terrain.types import TileCoord
 from city_worker.terrain.water import (
+    _cells_to_polygon,
     calculate_flow_accumulation,
     extract_beaches,
     extract_coastlines,
@@ -259,6 +261,7 @@ class TestSeamlessBorders:
         tile edge (CITY-674: bay erosion) produced cliffs ~17x larger.
         """
         import numpy as np
+
         from city_worker.terrain import apply_seed_variation
 
         kw = apply_seed_variation(setting, seed=42)
@@ -368,13 +371,16 @@ class TestWaterFeatures:
         assert coords1 == coords2
 
     def test_concave_coastline_preserves_bay(self):
-        """Concave hull should preserve bay-like indentations."""
+        """An L-shaped island keeps its notch as an L-shaped hole in the water."""
         import numpy as np
+        from shapely.geometry import Polygon
 
         # Create L-shaped land mass (has concavity)
         heightfield = np.zeros((32, 32))
         heightfield[4:28, 4:16] = 0.6  # vertical bar
         heightfield[16:28, 4:28] = 0.6  # horizontal bar
+        land_cells = int((heightfield > 0.35).sum())
+        cell = 1000.0 / 32
 
         features = extract_coastlines(
             heightfield=heightfield,
@@ -384,11 +390,96 @@ class TestWaterFeatures:
             tile_size=1000.0,
         )
 
-        assert len(features) > 0
-        poly_coords = features[0].geometry["coordinates"][0]
-        # The polygon should NOT be a simple rectangle (convex hull would be)
-        # An L-shape should have at least 5-6 unique vertices
-        assert len(poly_coords) >= 5
+        assert len(features) == 1
+        rings = features[0].geometry["coordinates"]
+        assert len(rings) == 2, "island should be a hole in the water polygon"
+        hole = Polygon(rings[1])
+        # A hull across the notch would add the 12x12-cell bay to the island
+        assert hole.area == pytest.approx(land_cells * cell * cell, rel=0.02)
+        assert len(rings[1]) >= 7  # six L corners plus the closing point
+
+    def test_coastline_snaps_to_tile_edges(self):
+        """Water touching the tile border reaches it exactly, even after fractal
+        displacement, so adjacent tiles meet with no seam (CITY-653)."""
+        import numpy as np
+        from shapely.geometry import Polygon
+
+        heightfield = np.zeros((32, 32))
+        heightfield[12:20, 12:20] = 0.6
+
+        features = extract_coastlines(
+            heightfield=heightfield,
+            water_level=0.35,
+            tile_x=1,
+            tile_y=2,
+            tile_size=1000.0,
+            fractal_seed=42,
+        )
+
+        assert len(features) == 1
+        exterior = Polygon(features[0].geometry["coordinates"][0])
+        assert exterior.bounds == (1000.0, 2000.0, 2000.0, 3000.0)
+        assert exterior.area == pytest.approx(1000.0 * 1000.0)
+
+    def test_coastline_all_water_tile_is_exact_square(self):
+        """An all-water tile is exactly the tile square; an all-land tile is empty."""
+        import numpy as np
+        from shapely.geometry import Polygon
+
+        water = extract_coastlines(
+            heightfield=np.zeros((32, 32)),
+            water_level=0.35,
+            tile_x=1,
+            tile_y=1,
+            tile_size=256.0,
+        )
+        land = extract_coastlines(
+            heightfield=np.ones((32, 32)),
+            water_level=0.35,
+            tile_x=1,
+            tile_y=1,
+            tile_size=256.0,
+        )
+
+        assert len(water) == 1
+        square = Polygon(water[0].geometry["coordinates"][0])
+        assert square.bounds == (256.0, 256.0, 512.0, 512.0)
+        assert square.area == pytest.approx(256.0 * 256.0)
+        assert land == []
+
+    @pytest.mark.parametrize(
+        "cells",
+        [
+            [(5, 5), (6, 6), (7, 7)],  # NW-SE
+            [(7, 5), (6, 6), (5, 7)],  # NE-SW
+            [(5 + k, 5 + k) for k in range(6)],
+            [(10 - k, 5 + k) for k in range(6)],
+        ],
+        ids=["nw-se-3", "ne-sw-3", "nw-se-6", "ne-sw-6"],
+    )
+    def test_cells_to_polygon_joins_corner_touching_cells(self, cells):
+        """8-connected cells (beach water fringes) come back as one polygon
+        covering every cell, in both diagonal directions."""
+        from shapely.geometry import Point
+
+        cell = 1000.0 / 32
+        poly = _cells_to_polygon(cells, 0, 0, 1000.0, cell, 32)
+
+        assert poly is not None
+        assert poly.geom_type == "Polygon"
+        for i, j in cells:
+            assert poly.contains(Point((j + 0.5) * cell, (i + 0.5) * cell))
+
+    def test_cells_to_polygon_traces_concave_outline(self):
+        """No chord across a concave shore: area matches the exact cell union."""
+        cell = 1000.0 / 32
+        cells = [(i, j) for i in range(4, 28) for j in range(4, 16)]
+        cells += [(i, j) for i in range(16, 28) for j in range(16, 28)]
+
+        poly = _cells_to_polygon(cells, 0, 0, 1000.0, cell, 32)
+
+        assert poly is not None
+        assert poly.area == pytest.approx(len(cells) * cell * cell, rel=0.02)
 
     def test_flow_accumulation(self):
         """Flow accumulation should concentrate in valleys."""
@@ -455,6 +546,7 @@ class TestNoisyCoastline:
 
     def test_denoise_keeps_edge_touching_regions(self):
         import numpy as np
+
         from city_worker.terrain.water import denoise_water_mask
 
         mask = np.zeros((128, 128), dtype=bool)
@@ -836,9 +928,10 @@ class TestBayGeneration:
     def test_bay_never_covers_land(self):
         """Bay polygons only cover water cells, on real generated terrain."""
         import numpy as np
-        from city_worker.terrain.noise import generate_heightfield
         from shapely.geometry import box, shape
         from shapely.ops import unary_union
+
+        from city_worker.terrain.noise import generate_heightfield
 
         ts, res, wl = 256.0, 64, 0.45
         cell = ts / res
@@ -892,8 +985,9 @@ class TestBayGeneration:
 
     def test_bay_area_matches_geometry(self):
         """A bay's area property equals its emitted polygon's area (CITY-690)."""
-        from city_worker.terrain.noise import generate_heightfield
         from shapely.geometry import shape
+
+        from city_worker.terrain.noise import generate_heightfield
 
         checked = 0
         for seed in range(6):
@@ -1578,6 +1672,7 @@ class TestRiverImprovements:
     def test_rivers_have_width_property(self):
         """Extracted rivers should include a width property."""
         import numpy as np
+
         from city_worker.terrain.water import extract_rivers
 
         # Create a heightfield with a clear valley for river formation
@@ -1606,6 +1701,7 @@ class TestRiverImprovements:
     def test_rivers_have_flow_properties(self):
         """Extracted rivers should include max_flow and avg_flow properties."""
         import numpy as np
+
         from city_worker.terrain.water import extract_rivers
 
         hf = np.ones((32, 32), dtype=np.float64) * 0.6
@@ -1644,6 +1740,7 @@ class TestRiverImprovements:
     def test_river_vertices_stay_compact_after_smoothing(self):
         """CITY-667: Chaikin x6 must not ship 64x vertices per river."""
         import numpy as np
+
         from city_worker.terrain.water import extract_rivers
 
         # Meandering valley so rivers have real curvature to preserve
@@ -1675,8 +1772,9 @@ class TestRiverImprovements:
 
     def test_simplified_river_stays_on_smoothed_curve(self):
         """CITY-683: simplification only drops points within tolerance."""
-        from city_worker.terrain.water import RIVER_OUTPUT_SIMPLIFY_CELLS, _chaikin_smooth
         from shapely.geometry import LineString
+
+        from city_worker.terrain.water import RIVER_OUTPUT_SIMPLIFY_CELLS, _chaikin_smooth
 
         cell_size = 2.0
         path = [(0, 0), (10, 6), (20, 2), (30, 12), (40, 4)]
@@ -1712,10 +1810,18 @@ class TestRiverImprovements:
         flow = np.full((32, 32), 100.0)
         # Tail vertices run diagonally; the recorded mouth tangent points straight down
         coords = [(4.0, 4.0), (10.0, 10.0), (16.0, 16.0), (22.0, 22.0), (26.0, 26.5)]
-        kwargs = dict(heightfield=hf, water_level=0.35, flow_accumulation=flow,
-                      tile_x=0, tile_y=0, tile_size=32.0)
+        kwargs = dict(
+            heightfield=hf,
+            water_level=0.35,
+            flow_accumulation=flow,
+            tile_x=0,
+            tile_y=0,
+            tile_size=32.0,
+        )
 
-        with_dir = detect_delta_candidates([self._river(coords, mouth_direction=[0.0, 1.0])], **kwargs)
+        with_dir = detect_delta_candidates(
+            [self._river(coords, mouth_direction=[0.0, 1.0])], **kwargs
+        )
         assert len(with_dir) == 1
         assert with_dir[0].flow_direction == (0.0, 1.0)
 
@@ -1749,6 +1855,7 @@ class TestGeographicMasks:
     def test_identity_mask_returns_unchanged(self):
         """identity_mask should return the heightfield unchanged."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, identity_mask
 
         hf = np.random.default_rng(42).random((16, 16))
@@ -1802,6 +1909,7 @@ class TestGeographicMasks:
     def test_apply_geographic_mask_clamps_output(self):
         """apply_geographic_mask should clamp results to [0, 1]."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import (
             apply_geographic_mask,
             register_mask,
@@ -1833,6 +1941,7 @@ class TestGeographicMasks:
     def test_apply_geographic_mask_clamps_negative(self):
         """apply_geographic_mask should clamp negative values to 0."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import (
             apply_geographic_mask,
             register_mask,
@@ -1881,6 +1990,7 @@ class TestGeographicMasks:
     def test_custom_mask_receives_correct_context(self):
         """A custom mask should receive the correct MaskContext values."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import (
             apply_geographic_mask,
             register_mask,
@@ -1991,6 +2101,7 @@ class TestInlandMask:
     def test_floor_raises_minimum_height(self):
         """All heights should be at or above the floor after masking."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, inland_mask
 
         hf = np.zeros((16, 16))  # All zeros — worst case
@@ -2001,6 +2112,7 @@ class TestInlandMask:
     def test_high_values_preserved(self):
         """Heights near 1.0 should stay near 1.0."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, inland_mask
 
         hf = np.ones((16, 16))
@@ -2012,6 +2124,7 @@ class TestInlandMask:
     def test_minimal_water_with_inland_water_level(self):
         """With inland water_level (~0.15), very little terrain should be below water."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, inland_mask
 
         rng = np.random.default_rng(42)
@@ -2025,6 +2138,7 @@ class TestInlandMask:
     def test_near_zero_water_with_typical_noise(self):
         """With realistic noise (mostly 0.3-0.7), water should be negligible."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, inland_mask
 
         rng = np.random.default_rng(99)
@@ -2060,6 +2174,7 @@ class TestIslandMask:
     def test_center_tile_has_land(self):
         """The center tile (1, 1) should retain high terrain values."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         hf = np.full((32, 32), 0.7)
@@ -2076,6 +2191,7 @@ class TestIslandMask:
     def test_far_tile_is_ocean(self):
         """A tile far from the origin should be entirely below water level."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         hf = np.full((32, 32), 0.7)
@@ -2086,6 +2202,7 @@ class TestIslandMask:
     def test_mask_is_deterministic(self):
         """Same seed should produce identical masks."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         hf = np.full((16, 16), 0.6)
@@ -2097,6 +2214,7 @@ class TestIslandMask:
     def test_different_seeds_produce_different_shapes(self):
         """Different seeds should create differently shaped islands."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         # Use tile (2,1) which is in the falloff zone where seed-based
@@ -2111,6 +2229,7 @@ class TestIslandMask:
     def test_land_at_center_water_at_world_corners(self):
         """For any seed, the world center is land and the 3x3 corners are water."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         hf = np.full((32, 32), 0.5)
@@ -2130,6 +2249,7 @@ class TestIslandMask:
     def test_island_land_fraction(self):
         """Islands should cover a usable share of the world (CITY-648 review)."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         hf = np.full((32, 32), 0.5)
@@ -2153,6 +2273,7 @@ class TestIslandMask:
     def test_interior_lifted_above_water(self):
         """Low interior terrain must not dip below water (no inland puddles)."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         hf = np.zeros((32, 32))
@@ -2163,6 +2284,7 @@ class TestIslandMask:
     def test_adjacent_tile_has_lower_values(self):
         """A tile at the world edge should have lower average values than center."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         hf = np.full((32, 32), 0.7)
@@ -2191,6 +2313,7 @@ class TestIslandMask:
     def test_island_surrounded_by_water(self):
         """All 4 edge midpoints of the 3x3 world should be near-zero (water)."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         ts = 500.0
@@ -2214,8 +2337,9 @@ class TestIslandMask:
     def test_satellite_islands_possible(self):
         """Some seeds should produce islets separate from the main island."""
         import numpy as np
-        from city_worker.terrain.geographic_masks import MaskContext, island_mask
         from scipy import ndimage
+
+        from city_worker.terrain.geographic_masks import MaskContext, island_mask
 
         ts = 500.0
         res = 32
@@ -2253,6 +2377,7 @@ class TestPeninsulaMask:
     def test_center_tile_has_land(self):
         """The center tile should have significant land area."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, peninsula_mask
 
         hf = np.full((32, 32), 0.7)
@@ -2265,6 +2390,7 @@ class TestPeninsulaMask:
     def test_far_tile_is_ocean(self):
         """A tile far from the peninsula should be mostly ocean."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, peninsula_mask
 
         hf = np.full((32, 32), 0.7)
@@ -2276,6 +2402,7 @@ class TestPeninsulaMask:
     def test_mask_is_deterministic(self):
         """Same seed should produce identical masks."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, peninsula_mask
 
         hf = np.full((16, 16), 0.6)
@@ -2287,6 +2414,7 @@ class TestPeninsulaMask:
     def test_different_seeds_produce_different_directions(self):
         """Different seeds should create differently oriented peninsulas."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, peninsula_mask
 
         hf = np.full((32, 32), 0.7)
@@ -2299,6 +2427,7 @@ class TestPeninsulaMask:
     def test_peninsula_is_elongated(self):
         """The peninsula mask should not be radially symmetric."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, peninsula_mask
 
         hf = np.full((32, 32), 0.7)
@@ -2337,6 +2466,7 @@ class TestRiverValleyMask:
     def test_center_has_depression(self):
         """The center tile should have a depression (lower heights near the river)."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, river_valley_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2348,6 +2478,7 @@ class TestRiverValleyMask:
     def test_edges_less_affected(self):
         """Terrain far from the river should be less affected."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, river_valley_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2362,6 +2493,7 @@ class TestRiverValleyMask:
     def test_mask_is_deterministic(self):
         """Same seed should produce identical masks."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, river_valley_mask
 
         hf = np.full((16, 16), 0.6)
@@ -2373,6 +2505,7 @@ class TestRiverValleyMask:
     def test_different_seeds_produce_different_valleys(self):
         """Different seeds should create differently oriented valleys."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, river_valley_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2385,6 +2518,7 @@ class TestRiverValleyMask:
     def test_valley_creates_linear_feature(self):
         """The depression should be roughly linear, not radial."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, river_valley_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2419,6 +2553,7 @@ class TestBayHarborMask:
     def test_center_has_mixed_land_and_water(self):
         """The center tile should have both high and low values (land + bay)."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, bay_harbor_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2432,6 +2567,7 @@ class TestBayHarborMask:
     def test_directional_gradient_exists(self):
         """One side should have higher terrain than the other (coast gradient)."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, bay_harbor_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2445,6 +2581,7 @@ class TestBayHarborMask:
     def test_bay_creates_depression(self):
         """The bay should create a depression below the surrounding land."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, bay_harbor_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2456,6 +2593,7 @@ class TestBayHarborMask:
     def test_mask_is_deterministic(self):
         """Same seed should produce identical masks."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, bay_harbor_mask
 
         hf = np.full((16, 16), 0.6)
@@ -2467,6 +2605,7 @@ class TestBayHarborMask:
     def test_different_seeds_produce_different_bays(self):
         """Different seeds should create differently oriented bays."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, bay_harbor_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2501,6 +2640,7 @@ class TestDeltaMask:
     def test_center_has_channel_depressions(self):
         """The center tile should have depressed channels (lower heights)."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, delta_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2512,6 +2652,7 @@ class TestDeltaMask:
     def test_fan_creates_varied_terrain(self):
         """The delta should create varied terrain (channels + islands)."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, delta_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2523,6 +2664,7 @@ class TestDeltaMask:
     def test_mask_is_deterministic(self):
         """Same seed should produce identical masks."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, delta_mask
 
         hf = np.full((16, 16), 0.6)
@@ -2534,6 +2676,7 @@ class TestDeltaMask:
     def test_different_seeds_produce_different_deltas(self):
         """Different seeds should create differently oriented deltas."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, delta_mask
 
         hf = np.full((32, 32), 0.6)
@@ -2546,6 +2689,7 @@ class TestDeltaMask:
     def test_multiple_channel_depressions(self):
         """The delta should have multiple distinct channel depressions."""
         import numpy as np
+
         from city_worker.terrain.geographic_masks import MaskContext, delta_mask
 
         hf = np.full((64, 64), 0.6)
