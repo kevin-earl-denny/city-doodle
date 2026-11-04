@@ -67,3 +67,52 @@ jobs:
             echo "::error::bin/migrations check failed (exit $status); could not verify the Alembic chain (see log above)."
             exit "$status"
           fi
+
+  upgrade-empty-db:
+    permissions:
+      contents: read
+    # Builds a database from nothing with the real migration chain, the way a
+    # new environment (or e2e.yml) does. Catches migrations that only work on
+    # databases that already ran them (CITY-684: duplicate CREATE TYPE).
+    name: Alembic upgrade on empty Postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: city_doodle
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install API requirements
+        # The same requirements the Fly image installs for its release_command.
+        run: pip install -r requirements.txt
+
+      - name: alembic upgrade head
+        env:
+          DATABASE_URL_SYNC: postgresql+psycopg2://postgres:postgres@localhost:5432/city_doodle
+        run: |
+          alembic upgrade head
+          alembic current

@@ -89,9 +89,7 @@ def upgrade() -> None:
 
     # Step 2: Update existing values to new enum values
     for old_val, new_val in OLD_TO_NEW.items():
-        op.execute(
-            f"UPDATE districts SET type = '{new_val}' WHERE type = '{old_val}'"
-        )
+        op.execute(f"UPDATE districts SET type = '{new_val}' WHERE type = '{old_val}'")
 
     # Step 3: Drop old enum type
     op.execute("DROP TYPE IF EXISTS district_type")
@@ -100,7 +98,7 @@ def upgrade() -> None:
     new_enum = postgresql.ENUM(
         *NEW_ENUM_VALUES,
         name="district_type",
-        create_type=True,
+        create_type=False,  # created explicitly below; True would re-CREATE it in create_table (CITY-684)
     )
     new_enum.create(op.get_bind(), checkfirst=True)
 
@@ -124,9 +122,7 @@ def downgrade() -> None:
 
     # Step 2: Update values back to old enum values
     for new_val, old_val in NEW_TO_OLD.items():
-        op.execute(
-            f"UPDATE districts SET type = '{old_val}' WHERE type = '{new_val}'"
-        )
+        op.execute(f"UPDATE districts SET type = '{old_val}' WHERE type = '{new_val}'")
 
     # Step 3: Drop new enum type
     op.execute("DROP TYPE IF EXISTS district_type")
@@ -135,7 +131,7 @@ def downgrade() -> None:
     old_enum = postgresql.ENUM(
         *OLD_ENUM_VALUES,
         name="district_type",
-        create_type=True,
+        create_type=False,  # created explicitly below; True would re-CREATE it in create_table (CITY-684)
     )
     old_enum.create(op.get_bind(), checkfirst=True)
 

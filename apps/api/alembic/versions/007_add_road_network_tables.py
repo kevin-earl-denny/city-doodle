@@ -21,16 +21,23 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     # Create enum types
     node_type = postgresql.ENUM(
-        "intersection", "endpoint", "roundabout", "interchange",
+        "intersection",
+        "endpoint",
+        "roundabout",
+        "interchange",
         name="node_type",
-        create_type=True,
+        create_type=False,  # created explicitly below; True would re-CREATE it in create_table (CITY-684)
     )
     node_type.create(op.get_bind(), checkfirst=True)
 
     road_class = postgresql.ENUM(
-        "highway", "arterial", "collector", "local", "alley",
+        "highway",
+        "arterial",
+        "collector",
+        "local",
+        "alley",
         name="road_class",
-        create_type=True,
+        create_type=False,  # created explicitly below; True would re-CREATE it in create_table (CITY-684)
     )
     road_class.create(op.get_bind(), checkfirst=True)
 
