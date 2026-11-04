@@ -80,7 +80,9 @@ def denoise_water_mask(water_mask: NDArray[np.bool_]) -> NDArray[np.bool_]:
     """Remove speckle noise from a binary water mask.
 
     Small water regions are flipped to land and small land regions to water,
-    so only coherent water bodies and land masses remain.
+    so only coherent water bodies and land masses remain. Regions touching the
+    tile edge are kept: they may continue into a neighbor tile, and removing
+    them from only one side would leave a seam.
     """
     min_cells = max(4, int(water_mask.size * MIN_REGION_FRACTION))
     cleaned = water_mask.copy()
@@ -89,6 +91,10 @@ def denoise_water_mask(water_mask: NDArray[np.bool_]) -> NDArray[np.bool_]:
         sizes = np.bincount(labeled.ravel())
         small = sizes < min_cells
         small[0] = False  # label 0 is the background, not a region
+        edge_labels = np.concatenate(
+            [labeled[0, :], labeled[-1, :], labeled[:, 0], labeled[:, -1]]
+        )
+        small[edge_labels] = False
         cleaned[small[labeled]] = not target
     return cleaned
 

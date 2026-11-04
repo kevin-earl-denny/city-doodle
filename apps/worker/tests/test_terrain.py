@@ -385,11 +385,28 @@ class TestNoisyCoastline:
 
         # Ocean on the right half, land on the left, plus land heights hovering
         # at water_level so ~10% of land cells dip into 1-cell "puddles".
+        # Puddles stay off the tile border: edge-touching regions are kept on
+        # purpose because they may continue into the neighbor tile.
         rng = np.random.default_rng(0)
         hf = np.full((128, 128), 0.5)
         hf[:, 64:] = 0.1
-        puddles = rng.random((128, 64)) < 0.1
-        hf[:, :64][puddles] = 0.3
+        puddles = rng.random((124, 60)) < 0.1
+        hf[2:-2, 2:62][puddles] = 0.3
+        return hf
+
+    @staticmethod
+    def _cove_coast():
+        import numpy as np
+
+        # Straight coast at column 80 with four sinusoidal coves cut into the land
+        hf = np.full((128, 128), 0.5)
+        hf[:, 80:] = 0.1
+        for k in range(4):
+            c = int((k + 0.5) * 32)
+            for i in range(c - 10, c + 10):
+                d = int(15 * np.sin((i - c + 10) * np.pi / 20))
+                if d > 0:
+                    hf[i, 80 - d : 80] = 0.1
         return hf
 
     def test_coastline_ignores_puddles(self):
@@ -402,17 +419,34 @@ class TestNoisyCoastline:
         )
         assert len(features) == 1  # just the ocean
 
+    def test_denoise_keeps_edge_touching_regions(self):
+        import numpy as np
+
+        from city_worker.terrain.water import denoise_water_mask
+
+        mask = np.zeros((128, 128), dtype=bool)
+        mask[60:62, 0:2] = True  # tiny, but touches the tile edge
+        mask[60:62, 60:62] = True  # tiny and interior
+        cleaned = denoise_water_mask(mask)
+        assert cleaned[60:62, 0:2].all()
+        assert not cleaned[60:62, 60:62].any()
+
     def test_bays_capped_per_tile(self):
-        features = extract_bays(
-            heightfield=self._speckled_coast(),
+        kwargs = dict(
+            heightfield=self._cove_coast(),
             water_level=0.35,
             tile_x=0,
             tile_y=0,
             tile_size=256.0,
             seed=42,
-            config=BayConfig(max_bays=2),
         )
-        assert len(features) <= 2
+        uncapped = extract_bays(**kwargs, config=BayConfig(max_bays=1000))
+        capped = extract_bays(**kwargs, config=BayConfig(max_bays=2))
+        assert len(uncapped) > 2
+        assert len(capped) == 2
+        # The cap keeps the largest bays
+        top_two = sorted((f.properties["area"] for f in uncapped), reverse=True)[:2]
+        assert [f.properties["area"] for f in capped] == top_two
 
 
 class TestTileCoord:
