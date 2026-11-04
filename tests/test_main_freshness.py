@@ -226,6 +226,32 @@ class TestSessionBranch:
         assert "other-branch" not in out
 
 
+class TestWorktreeAdviceAndOffline:
+    def test_worktree_advice_names_the_session_branch(self, tmp_path: Path) -> None:
+        # `git -C <primary> log HEAD..` would resolve the primary checkout's HEAD.
+        message = advise(3, 0, "CITY-641", "main", tmp_path)
+        assert message is not None
+        assert "CITY-641..origin/main" in message
+        assert "HEAD..origin/main" not in message
+
+    def test_detached_head_is_named_and_uses_session_head(self, tmp_path: Path) -> None:
+        message = advise(3, 0, "", "main", tmp_path)
+        assert message is not None
+        assert "detached HEAD" in message
+        assert f"-C {tmp_path}" not in message
+
+    def test_current_branch_is_empty_when_detached(self, clone: Path) -> None:
+        git(clone, "checkout", "--detach")
+        assert current_branch(clone) == ""
+
+    def test_failed_fetch_still_compares_on_disk_refs(self, clone: Path) -> None:
+        advance_upstream(clone, 2)  # origin/main already known to be 2 ahead
+        git(clone, "remote", "set-url", "origin", str(clone.parent / "gone"))
+        message = check(clone, do_fetch=True)
+        assert message and "2 commits behind" in message
+        assert "fetch failed" in message
+
+
 class TestDiagnostics:
     def test_unexpected_error_is_reported_on_stderr_and_exits_zero(
         self,

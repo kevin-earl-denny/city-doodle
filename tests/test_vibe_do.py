@@ -156,6 +156,22 @@ def test_do_invisible_team_says_so(do_env: dict) -> None:
     assert "cannot see the configured Linear team" in result.output
 
 
+def test_do_force_does_not_override_invisible_team(do_env: dict) -> None:
+    do_env["state"]["visible"] = False
+    result = _run("CITY-641", "--force")
+    assert result.exit_code == 1
+    assert "cannot see the configured Linear team" in result.output
+    assert _no_side_effects(do_env["calls"])
+
+
+def test_do_never_reclaims_duplicate_ticket() -> None:
+    tracker = MagicMock()
+    dup = _ticket(status="Duplicate", status_type="duplicate")
+    assert _already_started_guard_message(dup) is None
+    _mark_ticket_in_progress(tracker, dup)
+    tracker.update_ticket.assert_not_called()
+
+
 def test_do_force_on_unknown_ticket_proceeds_without_claim(do_env: dict) -> None:
     result = _run("CITY-99999", "--force")
     assert result.exit_code == 0, result.output

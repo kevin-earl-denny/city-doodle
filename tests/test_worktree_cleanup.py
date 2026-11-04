@@ -299,3 +299,112 @@ def test_cleanup_cli_exits_1_when_lookups_failed(
         assert result.exit_code == 1, result.output
         assert "LINEAR_API_KEY not set" in result.output
         assert "Nothing to clean up" not in result.output
+
+
+# --- agent review round (reviewer-a / reviewer-b, CITY-675) --------------------
+
+
+def _write_state_entry(repo: Path, ticket_id: str, worktree: Path, created_at: datetime) -> None:
+    import json
+
+    state_file = repo / ".vibe" / "local_state.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        json.dumps(
+            {
+                "active_worktrees": [],
+                "ticket_branches": {
+                    ticket_id: [
+                        {
+                            "branch": ticket_id,
+                            "worktree_path": str(worktree),
+                            "created_at": created_at.isoformat(),
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+
+def test_stale_state_entry_cannot_bypass_grace_period(repo_with_worktrees: Path) -> None:
+    # A worktree re-created at an old path: the state entry is 3 days old, the
+    # worktree's own `.git` is brand new. The newer timestamp must win.
+    wt = repo_with_worktrees.parent / "wts" / "CITY-1"
+    _write_state_entry(repo_with_worktrees, "CITY-1", wt, datetime.now() - timedelta(days=3))
+    tracker = _FakeTracker({"CITY-1": _ticket(status="Done", status_type="completed")})
+    statuses = {
+        s.branch: s
+        for s in classify_worktrees(repo_with_worktrees, tracker=tracker)  # type: ignore[arg-type]
+    }
+    assert not statuses["CITY-1"].removable
+    assert "grace period" in statuses["CITY-1"].reason
+
+
+def test_newer_state_entry_wins_over_old_git_mtime(repo_with_worktrees: Path) -> None:
+    import os
+
+    from lib.vibe.git.worktree_cleanup import _worktree_age_minutes
+
+    wt = repo_with_worktrees.parent / "wts" / "CITY-1"
+    old = (datetime.now() - timedelta(days=3)).timestamp()
+    os.utime(wt / ".git", (old, old))
+    _write_state_entry(repo_with_worktrees, "CITY-1", wt, datetime.now() - timedelta(minutes=5))
+    age = _worktree_age_minutes(str(wt), repo_with_worktrees)
+    assert age is not None and age < GRACE_PERIOD_MINUTES
+
+
+def test_duplicate_state_is_terminal() -> None:
+    assert is_terminal_status(_ticket(status="Duplicate", status_type="duplicate"))
+    assert is_terminal_status(_ticket(status="Duplicate", status_type=None))
+    assert not is_started_status(_ticket(status="Duplicate", status_type="duplicate"))
+    assert _decide(ticket=_ticket(status="Duplicate", status_type="duplicate"))[0] == "remove"
+
+
+def test_caller_cwd_from_wrapper_is_protected(
+    repo_with_worktrees: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # bin/vibe cds to its own checkout, so Python's cwd is the main repo; the
+    # caller's real directory arrives via VIBE_CALLER_CWD.
+    from lib.vibe.git.worktree_cleanup import list_feature_worktrees
+
+    monkeypatch.chdir(repo_with_worktrees)
+    monkeypatch.setenv("VIBE_CALLER_CWD", str(repo_with_worktrees.parent / "wts" / "CITY-2"))
+    branches = {w["branch"] for w in list_feature_worktrees(repo_with_worktrees)}
+    assert "CITY-2" not in branches
+    assert "CITY-1" in branches
+
+
+def test_bin_vibe_exports_caller_cwd_before_cd() -> None:
+    script = (Path(__file__).resolve().parents[1] / "bin" / "vibe").read_text()
+    export_at = script.index('export VIBE_CALLER_CWD="$PWD"')
+    assert export_at < script.index('cd "$REPO_ROOT"\n    python -m lib.vibe.cli.main')
+
+
+def test_cleanup_cli_exits_1_when_a_removal_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from lib.vibe.cli import main as vibe_main
+    from lib.vibe.git.worktree_cleanup import WorktreeStatus
+
+    status = WorktreeStatus(
+        path=str(tmp_path / "CITY-9"),
+        branch="CITY-9",
+        ticket_id="CITY-9",
+        decision="remove",
+        reason="CITY-9 is 'Done'",
+    )
+    monkeypatch.setattr("lib.vibe.git.worktrees.get_primary_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "lib.vibe.git.worktree_cleanup.classify_worktrees", lambda root, **kw: [status]
+    )
+    monkeypatch.setattr(
+        "lib.vibe.git.worktree_cleanup.remove_worktree_and_branch",
+        lambda *a: (False, "git worktree remove failed: locked"),
+    )
+    monkeypatch.setattr(vibe_main, "run_doctor", lambda *a, **k: [])
+    result = CliRunner().invoke(vibe_main.main, ["cleanup", "--force"])
+    assert result.exit_code == 1, result.output
+    assert "Failed to remove CITY-9" in result.output

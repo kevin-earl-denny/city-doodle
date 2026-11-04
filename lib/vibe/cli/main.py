@@ -382,11 +382,16 @@ def do(ticket_id: str, force: bool, dry_run: bool) -> None:
             sys.exit(1)
         if ticket is None:
             visible = LinearTracker(team_id=team_id).team_visible() if team_id else None
-            reason = (
-                "LINEAR_API_KEY cannot see the configured Linear team"
-                if visible is False
-                else "ticket not found"
-            )
+            if visible is False:
+                # A wrong-workspace key is a broken setup, not a missing ticket:
+                # --force must not paper over it with an unclaimed worktree.
+                click.echo(
+                    f"Error: {ticket_id}: LINEAR_API_KEY cannot see the configured "
+                    f"Linear team ({team_id}). Use a key from the workspace that owns it.",
+                    err=True,
+                )
+                sys.exit(1)
+            reason = "ticket not found"
             if not force:
                 click.echo(f"Error: {ticket_id}: {reason}.", err=True)
                 click.echo(
@@ -536,6 +541,7 @@ def cleanup(dry_run: bool, force: bool) -> None:
         return
 
     removed = 0
+    removal_failed = 0
     for s in removable:
         ok, msg = remove_worktree_and_branch(s.path, s.branch, repo_root)
         if ok:
@@ -543,6 +549,7 @@ def cleanup(dry_run: bool, force: bool) -> None:
             removed += 1
         else:
             click.echo(f"  Failed to remove {s.branch}: {msg}", err=True)
+            removal_failed += 1
 
     click.echo(f"\nCleaned up {removed} worktree(s).")
 
@@ -553,6 +560,9 @@ def cleanup(dry_run: bool, force: bool) -> None:
     passed = sum(1 for r in doctor_results if r.status.value == "✓")
     click.echo(f"Doctor: {passed}/{len(doctor_results)} checks passed.")
     _exit_if_lookups_failed()
+    if removal_failed:
+        click.echo(f"\nError: failed to remove {removal_failed} worktree(s); see above.", err=True)
+        sys.exit(1)
 
 
 def _get_first_commit_headline(main_branch: str = "main") -> str | None:

@@ -29,6 +29,7 @@ merged" — and, unlike git heuristics, it cannot misfire on a fresh branch.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -45,13 +46,23 @@ if TYPE_CHECKING:
 GRACE_PERIOD_MINUTES = 30
 
 # Linear WorkflowState.type values that mean "work is finished".
-TERMINAL_STATE_TYPES = frozenset({"completed", "canceled"})
+# `duplicate` is CITY's Duplicate state: closed, never to be reclaimed or kept.
+TERMINAL_STATE_TYPES = frozenset({"completed", "canceled", "duplicate"})
 
 # Display-name match for "work is finished". Checked IN ADDITION to the
 # `type` above (not merely as a fallback): a team's custom "Deployed" state
 # has Linear type `started`, yet a Deployed ticket's worktree is done.
 TERMINAL_STATE_NAMES = frozenset(
-    {"done", "canceled", "cancelled", "complete", "completed", "deployed", "shipped"}
+    {
+        "done",
+        "canceled",
+        "cancelled",
+        "complete",
+        "completed",
+        "deployed",
+        "shipped",
+        "duplicate",
+    }
 )
 
 # Status names that already mean "an agent has claimed this" — used to avoid
@@ -158,12 +169,15 @@ def _worktree_age_minutes(
 ) -> float | None:
     """Minutes since the worktree was created, or None if undeterminable.
 
-    Prefers the ``created_at`` recorded by ``bin/vibe do`` in local state;
-    falls back to the mtime of the worktree's ``.git`` pointer file (written
-    once at ``git worktree add`` time).
+    Uses the NEWER of two timestamps: the ``created_at`` recorded by
+    ``bin/vibe do`` in local state, and the mtime of the worktree's ``.git``
+    pointer file (written at ``git worktree add`` time). State entries are
+    never pruned, so a worktree re-created at the same path (by hand, or after
+    a manual ``git worktree remove``) would otherwise inherit a stale, old
+    timestamp and skip the grace period.
     """
     now = now or datetime.now()
-    created: datetime | None = None
+    from_state: datetime | None = None
 
     try:
         state = load_state(base_path=repo_root)
@@ -178,21 +192,25 @@ def _worktree_age_minutes(
                 if str(Path(wt).resolve()) != target:
                     continue
                 parsed = datetime.fromisoformat(ts)
-                if created is None or parsed > created:
-                    created = parsed
+                if parsed.tzinfo is not None:
+                    parsed = parsed.astimezone().replace(tzinfo=None)
+                if from_state is None or parsed > from_state:
+                    from_state = parsed
     except (OSError, ValueError, TypeError, AttributeError):
-        created = None
+        from_state = None
 
-    if created is None:
-        for candidate in (Path(worktree_path) / ".git", Path(worktree_path)):
-            try:
-                created = datetime.fromtimestamp(candidate.stat().st_mtime)
-                break
-            except OSError:
-                continue
+    from_fs: datetime | None = None
+    for candidate in (Path(worktree_path) / ".git", Path(worktree_path)):
+        try:
+            from_fs = datetime.fromtimestamp(candidate.stat().st_mtime)
+            break
+        except OSError:
+            continue
 
-    if created is None:
+    known = [t for t in (from_state, from_fs) if t is not None]
+    if not known:
         return None
+    created = max(known)
     try:
         return max(0.0, (now - created).total_seconds() / 60.0)
     except TypeError:
@@ -227,13 +245,18 @@ def list_feature_worktrees(repo_root: Path) -> list[dict[str, str]]:
         worktrees.append(current)
 
     main_path = str(repo_root.resolve())
-    cwd = Path.cwd().resolve()
+    # Never offer up the worktree the caller is standing in (e.g. `bin/vibe do`
+    # run from a finished worktree): removing it pulls the cwd out from under us.
+    # bin/vibe `cd`s to its own checkout before Python starts, so it exports the
+    # caller's original directory as VIBE_CALLER_CWD; protect both.
+    protected_dirs = [Path.cwd().resolve()]
+    caller_cwd = os.environ.get("VIBE_CALLER_CWD")
+    if caller_cwd:
+        protected_dirs.append(Path(caller_cwd).resolve())
 
     def _contains_cwd(path: str) -> bool:
-        # Never offer up the worktree the caller is standing in (e.g. `bin/vibe do`
-        # run from a finished worktree): removing it pulls the cwd out from under us.
         wt = Path(path).resolve()
-        return cwd == wt or wt in cwd.parents
+        return any(d == wt or wt in d.parents for d in protected_dirs)
 
     return [
         wt

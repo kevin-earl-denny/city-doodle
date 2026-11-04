@@ -101,7 +101,9 @@ main() {
     # Setup venv
     setup_venv "$python_cmd"
 
-    # Run the CLI
+    # Run the CLI. Remember where the caller was first: worktree cleanup must
+    # never remove the worktree the caller is standing in, and the cd below hides it.
+    export VIBE_CALLER_CWD="$PWD"
     cd "$REPO_ROOT"
     python -m lib.vibe.cli.main "$@"
 }

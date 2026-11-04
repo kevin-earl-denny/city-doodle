@@ -24,14 +24,16 @@ Exit:   0 always. This check reports; it never blocks.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 FETCH_TIMEOUT_SECONDS = 10
 
-# Kept narrow on purpose: a session that starts with no network, no remote, or a
-# half-initialised repo should print nothing and get out of the way.
+# Kept narrow on purpose: a session with no remote or a half-initialised repo should
+# print nothing and get out of the way. With no network, the last-fetched refs are
+# still compared (they may already show the checkout is behind).
 GIT_ERRORS = (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError)
 
 
@@ -43,6 +45,8 @@ def git(repo: Path, *args: str, timeout: int | None = None) -> str:
         capture_output=True,
         text=True,
         timeout=timeout,
+        # Never sit on a credential prompt (HTTPS remote, no helper) until the timeout.
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
     return result.stdout.strip()
 
@@ -111,9 +115,10 @@ def divergence(repo: Path, branch: str) -> tuple[int, int] | None:
 def current_branch(repo: Path) -> str:
     """The checked-out branch, or an empty string when detached."""
     try:
-        return git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+        branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     except GIT_ERRORS:
         return ""
+    return "" if branch == "HEAD" else branch
 
 
 def plural(count: int, noun: str) -> str:
@@ -152,11 +157,19 @@ def advise(behind: int, ahead: int, branch: str, main: str, repo: Path) -> str |
         return f"{main} is {gap}.\n  git -C {repo} pull --ff-only"
 
     if behind:
+        # Name the session's branch explicitly: `git -C <primary> ... HEAD..` would
+        # resolve the primary checkout's HEAD, not this session's branch.
+        where = branch or "a detached HEAD"
+        inspect = (
+            f"git -C {repo} log --oneline {branch}..origin/{main}"
+            if branch
+            else f"git log --oneline HEAD..origin/{main}"
+        )
         return (
-            f"{main} is {gap}, and you are on {branch}.\n"
+            f"{main} is {gap}, and you are on {where}.\n"
             f"  Pulling {main} is probably not what you want. Your branch base may be stale "
-            f"too, which this check cannot see:\n"
-            f"  git -C {repo} log --oneline HEAD..origin/{main}"
+            f"too; commits on origin/{main} your branch lacks:\n"
+            f"  {inspect}"
         )
 
     if ahead:
@@ -177,15 +190,19 @@ def check(repo: Path, do_fetch: bool = True, session_dir: Path | None = None) ->
     primary checkout's, and the advice depends on the session's branch.
     """
     main = default_branch(repo)
-    if do_fetch and not fetch(repo, main):
-        return None  # Offline or no remote. Not the session's problem to solve.
+    # Offline or unreachable remote: still compare against the last-fetched refs,
+    # which can already show the checkout is behind.
+    fetched = fetch(repo, main) if do_fetch else True
 
     counts = divergence(repo, main)
     if counts is None:
         return None
     behind, ahead = counts
 
-    return advise(behind, ahead, current_branch(session_dir or repo), main, repo)
+    message = advise(behind, ahead, current_branch(session_dir or repo), main, repo)
+    if message and not fetched:
+        message += f"\n  (fetch failed; compared against the last-fetched origin/{main})"
+    return message
 
 
 def main(argv: list[str] | None = None) -> int:

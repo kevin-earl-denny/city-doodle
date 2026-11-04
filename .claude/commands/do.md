@@ -25,11 +25,11 @@ Start working on a ticket by creating a dedicated git worktree and branch.
 
 ### Ticket-not-found guard
 
-If the ticket can't be found, `LINEAR_API_KEY` is missing/invalid, or the key can't see the CITY team, `bin/vibe do` exits 1 and changes nothing. `--force` creates the worktree anyway for a not-found ticket, but **without** claiming anything. `--dry-run` prints the branch and worktree path and changes nothing.
+If the ticket can't be found, `LINEAR_API_KEY` is missing/invalid, or the key can't see the CITY team, `bin/vibe do` exits 1 and changes nothing. `--force` creates the worktree anyway for a not-found ticket, but **without** claiming anything. It does not override a missing/invalid key or a key that can't see the team; those always exit 1. `--dry-run` prints the branch and worktree path and changes nothing.
 
 ### Already-started guard
 
-If the ticket is **already started** (In Progress / In Review), `bin/vibe do` **refuses** before creating a worktree — another agent may already be working it — and prints the status + assignee. Re-run with `--force` to claim it anyway: a forced claim reassigns the ticket to you but **leaves its status** (an In Review ticket isn't dragged back to In Progress). Terminal tickets (Done/Canceled) are never reopened.
+If the ticket is **already started** (In Progress / In Review), `bin/vibe do` **refuses** before creating a worktree — another agent may already be working it — and prints the status + assignee. Re-run with `--force` to claim it anyway: a forced claim reassigns the ticket to you but **leaves its status** (an In Review ticket isn't dragged back to In Progress). Terminal tickets (Done/Canceled/Duplicate/Deployed) are never reopened.
 
 ## Instructions
 

@@ -18,11 +18,11 @@ Remove worktrees whose ticket is complete, using `bin/vibe cleanup`.
 
 Runs `bin/vibe cleanup`, the ticket-aware cleanup (`lib/vibe/git/worktree_cleanup.py`). A worktree is removed **only** when all of these hold:
 
-1. its branch carries a ticket id and that Linear ticket is terminal (Done / Canceled),
+1. its branch carries a ticket id and that Linear ticket is terminal (Done / Canceled / Duplicate / Deployed),
 2. it has no uncommitted changes, and
 3. it's provably older than the 30-minute grace period.
 
-Anything ambiguous — no ticket id, Linear unreachable, ticket not found, unknown creation time — is **kept**.
+Anything ambiguous — no ticket id, Linear unreachable, ticket not found, unknown creation time — is **kept**, and `bin/vibe cleanup` exits 1 when a Linear lookup or a removal failed. The worktree you're standing in is never a candidate, even when you run the main checkout's `bin/vibe` from inside it. Age is the newer of the `bin/vibe do` record and the worktree's own creation time, so a worktree re-created at an old path still gets its grace period.
 
 **Never decide staleness from `git branch --merged`.** A fresh branch with zero commits looks "merged" while its ticket is still active, and that's how concurrent agents' worktrees get destroyed.
 
@@ -34,6 +34,8 @@ When the user invokes `/cleanup`:
 2. Show the user the list. Unless they passed `--force`, confirm before removing.
 3. Run `bin/vibe cleanup` (add `--force` only if the user asked). It runs `bin/vibe doctor` afterwards to sync state.
 4. Report what was removed and what was kept, with reasons.
+
+**Ignored files go with the worktree.** "Clean" means `git status` shows nothing, and `git status` doesn't list gitignored files. A terminal, clean worktree is therefore removed together with any ignored files in it: copied `.env.local` files, local databases, `node_modules`, build output. Copy out anything you need before its ticket closes.
 
 Branch deletion is conservative: `git branch -d` first; `-D` only when the branch tip already exists on a remote. A branch with unpushed commits is kept and reported, never deleted. `git worktree remove` runs without `--force`, so a worktree that turned dirty after classification is still refused.
 
