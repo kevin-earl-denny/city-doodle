@@ -15,6 +15,7 @@ import signal
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import asyncpg
@@ -38,6 +39,48 @@ def _make_asyncpg_dsn(sqlalchemy_url: str) -> str:
     dsn = sqlalchemy_url.replace("postgresql+asyncpg://", "postgresql://", 1)
     dsn = re.sub(r"sslmode=(\w+)", r"ssl=\1", dsn)
     return dsn
+
+
+def _strip_neon_pooler(url: str) -> str:
+    """Point a Neon pooled URL at the same endpoint's direct host.
+
+    Neon's pooled host is the direct host with ``-pooler`` appended to the
+    endpoint id (``ep-x-123-pooler.c-4.us-east-1.aws.neon.tech`` ->
+    ``ep-x-123.c-4.us-east-1.aws.neon.tech``). Only the first DNS label of
+    the host is touched; credentials, port, path and query are kept as-is.
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    authority, slash, tail = rest.partition("/")
+    userinfo, at, hostport = authority.rpartition("@")
+    first_label, dot, domain = hostport.partition(".")
+    if not first_label.endswith("-pooler"):
+        return url
+    hostport = first_label[: -len("-pooler")] + dot + domain
+    return f"{scheme}{sep}{userinfo}{at}{hostport}{slash}{tail}"
+
+
+def _listen_dsn(database_url: str, listen_database_url: str | None = None) -> str:
+    """asyncpg DSN for the dedicated LISTEN connection (CITY-701).
+
+    LISTEN needs a session-level connection. PgBouncer in transaction mode
+    (Neon's ``-pooler`` endpoint) accepts LISTEN but never delivers the
+    notifications, so the worker silently fell back to its 60 s poll.
+    ``LISTEN_DATABASE_URL`` wins when set; otherwise the pooled host is
+    rewritten to Neon's direct endpoint. Regular queries keep the pooled URL.
+    """
+    url = listen_database_url or _strip_neon_pooler(database_url)
+    return _make_asyncpg_dsn(url)
+
+
+def _dsn_host(dsn: str) -> str:
+    """Host:port of a DSN for logging, without credentials."""
+    try:
+        parts = urlsplit(dsn)
+        return f"{parts.hostname}:{parts.port}" if parts.port else str(parts.hostname)
+    except ValueError:
+        return "<unparseable>"
 
 
 class _NumpySafeEncoder(json.JSONEncoder):
@@ -82,6 +125,9 @@ class JobRunner:
         self._last_reclaim_time: float = 0.0
         self._consecutive_empty_polls: int = 0
         self._current_interval: float = settings.poll_interval_seconds
+        # How the loop last woke up ("startup", "notify", "fallback_poll" or
+        # "drain"); logged with each claim so Axiom shows the pickup path.
+        self._wake_reason: str = "startup"
 
     def _compute_poll_interval(self) -> float:
         """Compute the next poll interval using exponential backoff.
@@ -93,7 +139,7 @@ class JobRunner:
         if self._consecutive_empty_polls == 0:
             return settings.poll_interval_seconds
         base = settings.poll_interval_seconds
-        interval = base * (2 ** self._consecutive_empty_polls)
+        interval = base * (2**self._consecutive_empty_polls)
         return min(interval, settings.max_poll_interval_seconds)
 
     # ------------------------------------------------------------------
@@ -102,11 +148,15 @@ class JobRunner:
 
     async def _connect_listen(self) -> None:
         """Create (or recreate) the dedicated LISTEN connection."""
-        dsn = _make_asyncpg_dsn(settings.database_url)
+        dsn = _listen_dsn(settings.database_url, settings.listen_database_url)
         try:
             self._listen_conn = await asyncpg.connect(dsn)
             await self._listen_conn.add_listener(self.CHANNEL, self._on_notify)
-            logger.info("LISTEN connection established on channel '%s'", self.CHANNEL)
+            logger.info(
+                "LISTEN connection established on channel '%s' (host=%s)",
+                self.CHANNEL,
+                _dsn_host(dsn),
+            )
         except Exception:
             logger.exception("Failed to establish LISTEN connection")
             self._listen_conn = None
@@ -156,6 +206,11 @@ class JobRunner:
 
         await self._connect_listen()
 
+        # Drain once at startup: jobs queued while the worker was down (e.g.
+        # during a deploy) shouldn't wait for the first fallback poll.
+        self._notify_event.set()
+        first_wake = True
+
         while not self._shutdown:
             try:
                 # CITY-600: Reclaim stuck jobs periodically
@@ -168,21 +223,32 @@ class JobRunner:
                 await self._ensure_listen()
 
                 # Wait for a notification OR timeout (safety-net poll)
-                self._notify_event.clear()
                 try:
                     await asyncio.wait_for(
                         self._notify_event.wait(),
                         timeout=settings.listen_timeout_seconds,
                     )
-                    logger.debug("Woke up via NOTIFY")
-                except asyncio.TimeoutError:
-                    logger.debug("Fallback poll (no notification in %.0fs)", settings.listen_timeout_seconds)
+                    self._wake_reason = "startup" if first_wake else "notify"
+                except TimeoutError:
+                    self._wake_reason = "fallback_poll"
+                    logger.info(
+                        "Fallback poll (no notification in %.0fs)",
+                        settings.listen_timeout_seconds,
+                        extra={"event": "worker_wake", "wake": "fallback_poll"},
+                    )
+
+                # CITY-701: clear BEFORE draining. A NOTIFY that arrives while
+                # we drain (or reclaim / health-check) re-arms the event, so
+                # the next wait returns at once instead of after the timeout.
+                self._notify_event.clear()
+                first_wake = False
 
                 # Drain all available jobs (there may be more than one)
                 while not self._shutdown:
                     claimed = await self._poll_and_execute()
                     if not claimed:
                         break
+                    self._wake_reason = "drain"
 
             except Exception:
                 logger.exception("Error in job runner loop")
@@ -352,7 +418,8 @@ class JobRunner:
             async with session.begin():
                 result = await session.execute(
                     text("""
-                        SELECT id, type, params
+                        SELECT id, type, params, retry_count,
+                               EXTRACT(EPOCH FROM (clock_timestamp() - created_at)) AS pickup_s
                         FROM jobs
                         WHERE status = :pending
                           AND (retry_after IS NULL OR retry_after <= :now)
@@ -367,7 +434,7 @@ class JobRunner:
                 if row is None:
                     return None
 
-                job_id, job_type, params = row
+                job_id, job_type, params, retry_count, pickup_s = row
                 job_id = UUID(str(job_id))
 
                 await session.execute(
@@ -383,7 +450,26 @@ class JobRunner:
                     },
                 )
 
-                logger.info("Claimed job %s (type: %s)", job_id, job_type)
+                # CITY-701: pickup latency (claim time - created_at, DB clock)
+                # and wake path, so Axiom shows whether NOTIFY is working.
+                # Retried jobs include their retry delay; filter on retry_count.
+                pickup_ms = round(float(pickup_s or 0.0) * 1000, 1)
+                logger.info(
+                    "Claimed job %s (type: %s) pickup=%.0fms wake=%s retry=%s",
+                    job_id,
+                    job_type,
+                    pickup_ms,
+                    self._wake_reason,
+                    retry_count,
+                    extra={
+                        "event": "job_claimed",
+                        "job_id": str(job_id),
+                        "job_type": job_type,
+                        "pickup_latency_ms": pickup_ms,
+                        "wake": self._wake_reason,
+                        "retry_count": retry_count,
+                    },
+                )
                 return (job_id, job_type, params or {})
         finally:
             await session.close()
@@ -416,9 +502,7 @@ class JobRunner:
             reset_log_context(log_token)
 
     async def _execute_job_logged(self, job_id: UUID, job_type: str, params: dict) -> None:
-        logger.info(
-            "Executing job %s (type: %s)", job_id, job_type, extra={"event": "job_started"}
-        )
+        logger.info("Executing job %s (type: %s)", job_id, job_type, extra={"event": "job_started"})
         result: dict[str, Any] | None = None
         error: str | None = None
         start = time.monotonic()
@@ -550,9 +634,7 @@ class JobRunner:
         finally:
             await session.close()
 
-    async def _retry_job(
-        self, job_id: UUID, retry_count: int, error: str
-    ) -> None:
+    async def _retry_job(self, job_id: UUID, retry_count: int, error: str) -> None:
         """Re-queue a failed job for retry with exponential backoff.
 
         Increments retry_count, sets status back to PENDING, and schedules
@@ -610,7 +692,7 @@ class JobRunner:
         session = await get_session()
         try:
             async with session.begin():
-                values = f"terrain_status = :status"
+                values = "terrain_status = :status"
                 if error is not None:
                     values += ", terrain_error = :error"
                 elif status != "failed":
@@ -625,7 +707,10 @@ class JobRunner:
                 )
             logger.info(
                 "[Terrain] Updated terrain_status=%s for world=%s tx=%s ty=%s",
-                status, world_id, tx, ty,
+                status,
+                world_id,
+                tx,
+                ty,
             )
         finally:
             await session.close()
@@ -653,11 +738,19 @@ class JobRunner:
                             SET {values}
                             WHERE world_id = :world_id AND tx = :tx AND ty = :ty
                         """),
-                        {"status": status, "error": error, "world_id": world_id, "tx": tx, "ty": ty},
+                        {
+                            "status": status,
+                            "error": error,
+                            "world_id": world_id,
+                            "tx": tx,
+                            "ty": ty,
+                        },
                     )
             logger.info(
                 "[Terrain] Bulk updated terrain_status=%s for world=%s (%d tiles)",
-                status, world_id, len(tile_coords),
+                status,
+                world_id,
+                len(tile_coords),
             )
         finally:
             await session.close()
@@ -694,7 +787,9 @@ class JobRunner:
         world_id = UUID(world_id) if isinstance(world_id, str) else world_id
 
         # CITY-585: Mark center tile as "generating"
-        await self._update_tile_terrain_status(world_id, int(center_tx), int(center_ty), "generating")
+        await self._update_tile_terrain_status(
+            world_id, int(center_tx), int(center_ty), "generating"
+        )
 
         # CITY-626: Report initial progress (0/9)
         await self._update_job_progress(job_id, 0, 9)
@@ -708,7 +803,10 @@ class JobRunner:
             geographic_setting = world_settings.get("geographic_setting", "coastal")
             logger.info(
                 "[Terrain trace=%s] Job picked up: world=%s setting=%s seed=%s",
-                trace_id, world_id, geographic_setting, world_seed,
+                trace_id,
+                world_id,
+                geographic_setting,
+                world_seed,
             )
             config_kwargs = apply_seed_variation(geographic_setting, seed=int(world_seed))
             config_kwargs["world_seed"] = int(world_seed)
@@ -739,7 +837,12 @@ class JobRunner:
             total_s = t_save_end - t_pipeline_start
             logger.info(
                 "[Terrain trace=%s] Full pipeline complete in %.1fs (generation=%.1fs save=%.1fs) world=%s setting=%s",
-                trace_id, total_s, gen_s, save_s, world_id, geographic_setting,
+                trace_id,
+                total_s,
+                gen_s,
+                save_s,
+                world_id,
+                geographic_setting,
             )
 
             # CITY-585: Mark all generated tiles as "ready"
@@ -793,10 +896,17 @@ class JobRunner:
                     features_dict = tile_data.features_to_geojson()
 
                     fc_type = features_dict.get("type") if isinstance(features_dict, dict) else None
-                    fc_count = len(features_dict.get("features", [])) if isinstance(features_dict, dict) and fc_type == "FeatureCollection" else 0
+                    fc_count = (
+                        len(features_dict.get("features", []))
+                        if isinstance(features_dict, dict) and fc_type == "FeatureCollection"
+                        else 0
+                    )
                     logger.info(
                         "[Terrain trace=%s] Saving tile tx=%s ty=%s feature_count=%d",
-                        trace_id, tile_data.tx, tile_data.ty, fc_count,
+                        trace_id,
+                        tile_data.tx,
+                        tile_data.ty,
+                        fc_count,
                     )
 
                     # CITY-612: Serialize dicts to JSON strings for JSONB columns.
@@ -830,7 +940,9 @@ class JobRunner:
 
                 logger.info(
                     "[Terrain trace=%s] Saved %d terrain tiles for world %s",
-                    trace_id, total, world_id,
+                    trace_id,
+                    total,
+                    world_id,
                 )
 
             # CITY-626: Report progress after the transaction commits
@@ -870,9 +982,7 @@ class JobRunner:
         years = max(1, min(int(years), 10))
 
         # Fetch current world state from DB
-        districts, road_nodes, road_edges, pois, world_seed = (
-            await self._load_world_state(world_id)
-        )
+        districts, road_nodes, road_edges, pois, world_seed = await self._load_world_state(world_id)
 
         if not districts:
             return {
@@ -891,13 +1001,22 @@ class JobRunner:
         config = GrowthConfig(world_id=world_id, years=years)
         simulator = GrowthSimulator(config, seed=world_seed)
         changelog = simulator.simulate(
-            districts, road_nodes, road_edges, pois, water_regions,
+            districts,
+            road_nodes,
+            road_edges,
+            pois,
+            water_regions,
             transit_stations,
         )
 
         # Persist changes back to DB
         await self._save_growth_results(
-            world_id, districts, road_nodes, road_edges, pois, changelog,
+            world_id,
+            districts,
+            road_nodes,
+            road_edges,
+            pois,
+            changelog,
         )
 
         result = changelog.to_dict()
@@ -905,7 +1024,8 @@ class JobRunner:
         return result
 
     async def _load_world_state(
-        self, world_id: UUID,
+        self,
+        world_id: UUID,
     ) -> tuple[list[dict], list[dict], list[dict], list[dict], int]:
         """Load districts, road nodes, road edges, POIs, and world seed."""
         session = await get_session()
@@ -929,9 +1049,15 @@ class JobRunner:
             )
             districts = [
                 {
-                    "id": str(r[0]), "world_id": str(r[1]), "type": r[2],
-                    "name": r[3], "geometry": r[4], "density": float(r[5]),
-                    "max_height": r[6], "transit_access": r[7], "historic": r[8],
+                    "id": str(r[0]),
+                    "world_id": str(r[1]),
+                    "type": r[2],
+                    "name": r[3],
+                    "geometry": r[4],
+                    "density": float(r[5]),
+                    "max_height": r[6],
+                    "transit_access": r[7],
+                    "historic": r[8],
                 }
                 for r in result.fetchall()
             ]
@@ -946,8 +1072,11 @@ class JobRunner:
             )
             road_nodes = [
                 {
-                    "id": str(r[0]), "world_id": str(r[1]),
-                    "position": r[2], "node_type": r[3], "name": r[4],
+                    "id": str(r[0]),
+                    "world_id": str(r[1]),
+                    "position": r[2],
+                    "node_type": r[3],
+                    "name": r[4],
                 }
                 for r in result.fetchall()
             ]
@@ -964,12 +1093,17 @@ class JobRunner:
             )
             road_edges = [
                 {
-                    "id": str(r[0]), "world_id": str(r[1]),
-                    "from_node_id": str(r[2]), "to_node_id": str(r[3]),
-                    "road_class": r[4], "geometry": r[5],
+                    "id": str(r[0]),
+                    "world_id": str(r[1]),
+                    "from_node_id": str(r[2]),
+                    "to_node_id": str(r[3]),
+                    "road_class": r[4],
+                    "geometry": r[5],
                     "length_meters": float(r[6]) if r[6] else 0,
-                    "speed_limit": r[7], "name": r[8],
-                    "is_one_way": r[9], "lanes": r[10],
+                    "speed_limit": r[7],
+                    "name": r[8],
+                    "is_one_way": r[9],
+                    "lanes": r[10],
                     "district_id": str(r[11]) if r[11] else None,
                 }
                 for r in result.fetchall()
@@ -985,9 +1119,12 @@ class JobRunner:
             )
             pois = [
                 {
-                    "id": str(r[0]), "world_id": str(r[1]),
-                    "type": r[2], "name": r[3],
-                    "position_x": float(r[4]), "position_y": float(r[5]),
+                    "id": str(r[0]),
+                    "world_id": str(r[1]),
+                    "type": r[2],
+                    "name": r[3],
+                    "position_x": float(r[4]),
+                    "position_y": float(r[5]),
                 }
                 for r in result.fetchall()
             ]
