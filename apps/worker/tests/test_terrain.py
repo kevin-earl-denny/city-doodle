@@ -1,5 +1,8 @@
 """Tests for terrain generation module."""
 
+import platform
+import sys
+
 import pytest
 
 from city_worker.terrain import (
@@ -111,6 +114,10 @@ class TestHeightfieldGeneration:
         with pytest.raises(ValueError):
             generate_heightfield(seed=1, tx=0, ty=0, tile_size=tile_size, resolution=resolution)
 
+    @pytest.mark.skipif(
+        sys.platform == "darwin" and platform.machine() == "x86_64",
+        reason="numba has no Intel-macOS wheel, so the worker installs it without numba",
+    )
     def test_noise_kernel_is_jit_compiled(self):
         """numba must be installed so opensimplex compiles its kernel (CITY-700).
 
